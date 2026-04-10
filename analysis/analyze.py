@@ -1,10 +1,14 @@
 """
 Hybrid Sniper Trade Analyzer
-Usage: python -m analysis.analyze [--days N] [--db hybrid_trades.db]
+Usage:
+    python -m analysis.analyze [--days N] [--db hybrid_trades.db]
+    python -m analysis.analyze --watch [--interval 60] [--days 7]
 """
 
 import argparse
 import sqlite3
+import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -16,15 +20,11 @@ from rich.panel import Panel
 console = Console()
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default="hybrid_trades.db")
-    parser.add_argument("--days", type=int, default=0)
-    args = parser.parse_args()
-
+def report(args):
+    """Run one analysis pass. Returns False if no data."""
     if not Path(args.db).exists():
         console.print("[yellow]No database. Run the bot first.[/]")
-        return
+        return False
 
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
@@ -38,9 +38,11 @@ def main():
     q += " ORDER BY opened_at"
 
     trades = [dict(r) for r in conn.execute(q, p).fetchall()]
+    conn.close()
+
     if not trades:
         console.print("[yellow]No closed trades found.[/]")
-        return
+        return False
 
     wins = [t for t in trades if t["pnl"] > 0]
     losses = [t for t in trades if t["pnl"] <= 0]
@@ -101,6 +103,7 @@ def main():
             title="Edge decay analysis"))
 
     console.print()
+    return True
 
 
 def _table(title, trades, key_fn):
@@ -141,6 +144,39 @@ def _ttl_bucket(t):
     if t < 30: return "20-30s"
     if t < 45: return "30-45s"
     return "45-60s"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Hybrid Sniper Trade Analyzer")
+    parser.add_argument("--db", default="hybrid_trades.db")
+    parser.add_argument("--days", type=int, default=0, metavar="N",
+                        help="Limit to last N days (0 = all time)")
+    parser.add_argument("--watch", action="store_true",
+                        help="Auto-refresh mode (like watch -n)")
+    parser.add_argument("--interval", type=int, default=60, metavar="SEC",
+                        help="Refresh interval in seconds (default: 60, only with --watch)")
+    args = parser.parse_args()
+
+    if not args.watch:
+        report(args)
+        return
+
+    # Watch mode
+    try:
+        while True:
+            console.clear()
+            refreshed_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            console.print(f"[dim]Auto-refresh every {args.interval}s  |  Last run: {refreshed_at}  |  Ctrl+C to quit[/]")
+            report(args)
+
+            for remaining in range(args.interval, 0, -1):
+                sys.stdout.write(f"\r  Refreshing in {remaining:3d}s ...  ")
+                sys.stdout.flush()
+                time.sleep(1)
+
+    except KeyboardInterrupt:
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        console.print("[dim]Watch mode stopped.[/]")
 
 
 if __name__ == "__main__":
