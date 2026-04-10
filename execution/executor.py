@@ -75,6 +75,7 @@ class Executor:
         """Fetch actual USDC balance from Polymarket wallet.
 
         Returns the collateral (USDC) balance, or 0 on failure.
+        The API returns balance as a string in raw USDC units (not wei).
         """
         if not self._clob:
             return 0.0
@@ -82,17 +83,34 @@ class Executor:
             resp = self._clob.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
-            if resp and isinstance(resp, dict):
-                # Balance is in raw units, convert from wei (6 decimals for USDC)
-                raw = float(resp.get("balance", 0))
-                balance = raw / 1e6
-                return balance
-            elif resp and hasattr(resp, 'balance'):
-                raw = float(resp.balance)
-                return raw / 1e6
-            return 0.0
+            log.info("Wallet balance response: %s (type=%s)", resp, type(resp).__name__)
+
+            if not resp:
+                return 0.0
+
+            # Response is typically: {"balance": "123.45", "allowance": "..."}
+            # Balance can be a string or number, in USDC or in raw units
+            raw_balance = None
+            if isinstance(resp, dict):
+                raw_balance = resp.get("balance", 0)
+            elif hasattr(resp, 'balance'):
+                raw_balance = resp.balance
+
+            if raw_balance is None:
+                return 0.0
+
+            balance = float(raw_balance)
+
+            # Detect if balance is in wei/raw units (very large number)
+            # USDC has 6 decimals, so >1M likely means raw units
+            if balance > 1_000_000:
+                balance = balance / 1e6
+
+            log.info("Parsed wallet balance: $%.2f", balance)
+            return balance
+
         except Exception as e:
-            log.warning("Failed to fetch wallet balance: %s", e)
+            log.warning("Failed to fetch wallet balance: %s", e, exc_info=True)
             return 0.0
 
     @property
