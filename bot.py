@@ -27,6 +27,7 @@ from rich.live import Live
 
 from core.config import CFG
 from core.database import Database
+from core import telegram
 from feeds.prices import PriceFeeds
 from feeds.markets import MarketDiscovery
 from engine.signal import HybridEngine
@@ -92,6 +93,10 @@ async def run(is_live: bool, portfolio: float):
     # Initial market discovery
     await markets.discover()
 
+    # Telegram: bot started
+    mode_str = "LIVE" if is_live else "PAPER"
+    await telegram.notify_bot_start(mode_str, portfolio)
+
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
             while True:
@@ -105,10 +110,14 @@ async def run(is_live: bool, portfolio: float):
                 closed = executor.close_expired()
                 for _, trade in closed:
                     risk.update_portfolio(trade.pnl)
+                    await telegram.notify_trade_closed(trade)
 
                 # Risk check
                 can_trade, reason = risk.can_trade()
                 if not can_trade:
+                    if risk.kill_switch and reason.startswith("kill switch"):
+                        await telegram.notify_kill_switch(
+                            reason, db.daily_pnl(), risk.portfolio)
                     live.update(dash.render())
                     await asyncio.sleep(CFG.poll_interval)
                     continue
@@ -142,6 +151,7 @@ async def run(is_live: bool, portfolio: float):
                         engine.mark_traded(token.asset, token.window_ts)
                         risk.on_trade()
                         dash.signals_fired += 1
+                        await telegram.notify_trade_opened(trade)
 
                 live.update(dash.render())
                 await asyncio.sleep(CFG.poll_interval)
@@ -157,6 +167,10 @@ async def run(is_live: bool, portfolio: float):
         st = db.lifetime_stats()
         log.info("FINAL: P&L=$%+.4f WR=%.1f%% (%d/%d) Exp=$%+.4f",
                  st["pnl"], st["wr"], st["wins"], st["total"], st["expectancy"])
+        try:
+            await telegram.notify_bot_stop(st, risk.portfolio)
+        except Exception:
+            pass
 
 
 def main():
