@@ -65,8 +65,18 @@ async def run(is_live: bool, portfolio: float):
     feeds = PriceFeeds()
     markets = MarketDiscovery(price_feeds=feeds)
     engine = HybridEngine(feeds)
-    risk = RiskManager(db, portfolio)
     executor = Executor(db, feeds, is_live)
+
+    # In live mode, fetch actual wallet balance as portfolio value
+    if is_live:
+        wallet_balance = executor.get_wallet_balance()
+        if wallet_balance > 0:
+            portfolio = wallet_balance
+            log.info("Wallet balance: $%.2f (using as portfolio)", portfolio)
+        else:
+            log.warning("Could not fetch wallet balance, using --portfolio $%.2f", portfolio)
+
+    risk = RiskManager(db, portfolio)
     dash = Dashboard(db, feeds, markets, risk, executor, is_live)
 
     # Start feed tasks
