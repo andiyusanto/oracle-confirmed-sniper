@@ -62,7 +62,7 @@ async def run(is_live: bool, portfolio: float):
     # Initialize components
     db = Database(CFG.db_path)
     feeds = PriceFeeds()
-    markets = MarketDiscovery()
+    markets = MarketDiscovery(price_feeds=feeds)
     engine = HybridEngine(feeds)
     risk = RiskManager(db, portfolio)
     executor = Executor(db, feeds, is_live)

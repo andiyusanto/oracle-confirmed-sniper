@@ -1,12 +1,12 @@
 """
 Signal engine: Oracle-confirmed end-cycle sniper (Strategy D).
 
-Combines oracle-lead detection with end-cycle sniping.
-Only trades when ALL of these are true simultaneously:
-  1. Time remaining is within the snipe window (T-60s to T-3s)
-  2. Oracle (Chainlink) delta from opening confirms direction
-  3. Token price is in the profitable range ($0.55-$0.95)
-  4. Combined confidence score exceeds threshold
+Optimizations applied:
+  1. Tiered entry windows — strong deltas can enter earlier
+  2. Adaptive confidence threshold — lower bar for high-conviction signals
+  3. Improved fair_value curve with better calibration
+  4. Minimum edge scaled by entry price (cheap tokens need bigger edge)
+  5. Kelly-informed sizing with edge/variance awareness
 """
 
 import logging
@@ -23,70 +23,81 @@ log = logging.getLogger("hybrid.engine")
 class HybridEngine:
     def __init__(self, feeds: PriceFeeds):
         self.feeds = feeds
-        self._traded_windows: set[str] = set()  # "BTC_1775139300" etc
+        self._traded_windows: set[str] = set()
 
     def evaluate(self, token: Token, portfolio: float,
                  is_live: bool = False) -> Optional[Signal]:
-        """
-        Evaluate a single token for a snipe opportunity.
-        Returns Signal if all conditions met, None otherwise.
-        """
+        """Evaluate a single token for a snipe opportunity."""
         now = time.time()
         ttl = token.end_ts - now
         asset = token.asset
 
-        # ── GATE 1: Timing ──────────────────────────────────────────
-        if ttl > CFG.snipe_entry_sec or ttl < CFG.snipe_exit_sec:
-            return None
-
-        # ── GATE 2: Not already traded this window ──────────────────
+        # ── GATE 1: Not already traded this window ────────────────
         wkey = f"{asset}_{token.window_ts}"
         if wkey in self._traded_windows:
             return None
 
-        # ── GATE 3: Capture opening price ───────────────────────────
+        # ── GATE 2: Capture opening price ─────────────────────────
         self.feeds.capture_opening(asset, token.window_ts)
 
-        # ── GATE 4: Oracle delta ────────────────────────────────────
+        # ── GATE 3: Oracle delta ──────────────────────────────────
         delta = self.feeds.oracle_delta(asset, token.window_ts)
-        if abs(delta) < CFG.min_delta_pct:
+        abs_delta = abs(delta)
+        if abs_delta < CFG.min_delta_pct:
+            return None
+
+        # ── GATE 4: Tiered timing based on delta strength ─────────
+        # Stronger delta = can enter earlier with confidence
+        # Weak delta = wait longer for time confirmation
+        if abs_delta >= CFG.extreme_delta_pct:
+            max_entry_sec = CFG.snipe_entry_sec       # T-55s
+        elif abs_delta >= CFG.strong_delta_pct:
+            max_entry_sec = CFG.snipe_entry_strong     # T-45s
+        else:
+            max_entry_sec = CFG.snipe_entry_weak        # T-25s
+
+        if ttl > max_entry_sec or ttl < CFG.snipe_exit_sec:
             return None
 
         oracle_says = "UP" if delta > 0 else "DOWN"
 
-        # ── GATE 5: Oracle must agree with token direction ──────────
-        # If oracle says UP, we want to buy the UP token (YES side)
-        # If oracle says DOWN, we want to buy the DOWN token (YES side)
-        # OR buy NO on the opposite token
+        # ── GATE 5: Oracle must agree with token direction ────────
         if oracle_says != token.direction:
-            # This token is on the losing side — skip
-            # (We'll catch the winning-side token separately)
             return None
 
-        # ── GATE 6: Token price in range ────────────────────────────
+        # ── GATE 6: Token price in range ──────────────────────────
         price = token.book_price
         if price < CFG.min_token_price or price > CFG.max_token_price:
             return None
 
-        # ── GATE 7: Confidence scoring ──────────────────────────────
+        # ── GATE 7: Confidence scoring (adaptive threshold) ──────
         confidence = self._score(delta, ttl, price, asset)
-        if confidence < CFG.min_confidence:
+
+        # Strong deltas get a lower confidence threshold
+        threshold = (CFG.min_confidence_strong
+                     if abs_delta >= CFG.strong_delta_pct
+                     else CFG.min_confidence)
+        if confidence < threshold:
             return None
 
-        # ── Compute fair value and edge ─────────────────────────────
+        # ── GATE 8: Fair value and edge ───────────────────────────
         fair_value = self._fair_value(delta, ttl)
         edge_pct = (fair_value - price) * 100
 
-        if edge_pct < 0.5:  # minimum 0.5% edge after pricing
+        # Minimum edge scales with risk: cheap tokens need more edge
+        # $0.55 entry → need 3% edge; $0.90 → need 1% edge
+        min_edge = max(0.5, 3.0 - price * 2.8)
+        if edge_pct < min_edge:
             return None
 
-        # ── Position sizing ─────────────────────────────────────────
-        size = self._compute_size(price, portfolio, is_live)
+        # ── Position sizing ───────────────────────────────────────
+        size = self._compute_size(price, edge_pct, portfolio, is_live)
         if size < 1.0:
             return None
 
-        # ── Build oracle state ──────────────────────────────────────
-        opening = self.feeds.openings.get(asset, {}).get(token.window_ts, 0)
+        # ── Build signal ──────────────────────────────────────────
+        opening = self.feeds.openings.get(asset, {}).get(
+            token.window_ts, 0)
         oracle = OracleState(
             asset=asset, window_ts=token.window_ts,
             opening_price=opening,
@@ -105,9 +116,12 @@ class HybridEngine:
 
         log.info(
             "SIGNAL %s %s @ $%.3f | delta=%.4f%% conf=%.0f edge=%.1f%% "
-            "ttl=%.0fs size=$%.2f fair=$%.3f open=$%.2f",
+            "ttl=%.0fs size=$%.2f fair=$%.3f tier=%s",
             asset, oracle_says, price, delta, confidence, edge_pct,
-            ttl, size, fair_value, opening,
+            ttl, size, fair_value,
+            "EXTREME" if abs_delta >= CFG.extreme_delta_pct
+            else "STRONG" if abs_delta >= CFG.strong_delta_pct
+            else "WEAK",
         )
 
         return signal
@@ -115,45 +129,42 @@ class HybridEngine:
     def mark_traded(self, asset: str, window_ts: int):
         """Mark a window as traded (prevent duplicates)."""
         self._traded_windows.add(f"{asset}_{window_ts}")
-        # Prune old entries
         now = time.time()
         self._traded_windows = {
             w for w in self._traded_windows
-            if int(w.split("_")[1]) + 600 > now  # keep 10 min
+            if int(w.split("_")[1]) + 600 > now
         }
 
-    def _score(self, delta: float, ttl: float, price: float, asset: str) -> float:
-        """
-        Combined confidence score (0-100).
+    def _score(self, delta: float, ttl: float, price: float,
+               asset: str) -> float:
+        """Combined confidence score (0-100).
+
         Components:
-          delta_score  (0-40): oracle move magnitude
-          time_score   (0-30): less time = more certain
-          price_score  (0-20): market agreement (higher price = more certain)
-          source_score (0-10): Chainlink freshness
+          delta_score    (0-40): oracle move magnitude
+          time_score     (0-30): less time = more certain
+          price_score    (0-20): market agreement
+          freshness_score (0-10): Chainlink data freshness
         """
         abs_d = abs(delta)
 
-        # Delta score
+        # Delta score — continuous interpolation
         if abs_d >= CFG.extreme_delta_pct:
             ds = 40.0
         elif abs_d >= CFG.strong_delta_pct:
-            ds = 30.0 + (abs_d - CFG.strong_delta_pct) / (CFG.extreme_delta_pct - CFG.strong_delta_pct) * 10
+            ds = 30.0 + (abs_d - CFG.strong_delta_pct) / \
+                 (CFG.extreme_delta_pct - CFG.strong_delta_pct) * 10
         elif abs_d >= CFG.min_delta_pct:
-            ds = 10.0 + (abs_d - CFG.min_delta_pct) / (CFG.strong_delta_pct - CFG.min_delta_pct) * 20
+            ds = 10.0 + (abs_d - CFG.min_delta_pct) / \
+                 (CFG.strong_delta_pct - CFG.min_delta_pct) * 20
         else:
             ds = 0.0
 
-        # Time score
-        if ttl <= 10:
+        # Time score — continuous
+        if ttl <= 5:
             ts = 30.0
-        elif ttl <= 20:
-            ts = 25.0
-        elif ttl <= 30:
-            ts = 20.0
-        elif ttl <= 45:
-            ts = 15.0
         elif ttl <= 60:
-            ts = 10.0
+            # Linear from 30 (at 5s) to 8 (at 60s)
+            ts = 30.0 - (ttl - 5) * (22.0 / 55.0)
         else:
             ts = 5.0
 
@@ -169,7 +180,7 @@ class HybridEngine:
         else:
             ps = 2.0
 
-        # Source freshness score
+        # Chainlink freshness score
         stale = self.feeds.chainlink_staleness(asset)
         if stale < 5:
             ss = 10.0
@@ -183,55 +194,61 @@ class HybridEngine:
         return min(100.0, ds + ts + ps + ss)
 
     def _fair_value(self, delta: float, ttl: float) -> float:
-        """
-        Estimate true probability of this outcome winning.
-        Based on oracle delta magnitude and time remaining.
+        """Estimate true probability of this outcome winning.
 
-        Observed from market data:
-          delta 0.02% → ~55% probability
-          delta 0.05% → ~65% probability
-          delta 0.10% → ~80% probability
-          delta 0.15%+ → ~90% probability
-
-        Time decay: less time = delta more likely to hold
+        Calibrated from observed market data. The key insight is that
+        fair value depends on BOTH delta magnitude AND time remaining.
+        A 0.05% delta at T-50s is much less certain than at T-10s.
         """
         abs_d = abs(delta)
 
-        # Base probability from delta
-        if abs_d >= 0.15:
-            base = 0.92
+        # Base probability from delta magnitude
+        if abs_d >= 0.20:
+            base = 0.95
+        elif abs_d >= 0.15:
+            base = 0.90 + (abs_d - 0.15) / 0.05 * 0.05
         elif abs_d >= 0.10:
-            base = 0.80 + (abs_d - 0.10) / 0.05 * 0.12
+            base = 0.78 + (abs_d - 0.10) / 0.05 * 0.12
         elif abs_d >= 0.05:
-            base = 0.65 + (abs_d - 0.05) / 0.05 * 0.15
+            base = 0.63 + (abs_d - 0.05) / 0.05 * 0.15
         elif abs_d >= 0.03:
-            base = 0.58 + (abs_d - 0.03) / 0.02 * 0.07
+            base = 0.57 + (abs_d - 0.03) / 0.02 * 0.06
         elif abs_d >= 0.02:
-            base = 0.55 + (abs_d - 0.02) / 0.01 * 0.03
+            base = 0.54 + (abs_d - 0.02) / 0.01 * 0.03
         else:
-            base = 0.50 + abs_d * 2.5
+            base = 0.50 + abs_d * 2.0
 
-        # Time adjustment: less time = delta holds better
-        if ttl <= 10:
-            adj = 1.05  # 5% boost — almost no time to reverse
+        # Time adjustment — continuous multiplier
+        # Less time = delta more likely to hold = higher probability
+        if ttl <= 5:
+            adj = 1.06
+        elif ttl <= 10:
+            adj = 1.04
         elif ttl <= 20:
-            adj = 1.03
+            adj = 1.02
         elif ttl <= 30:
-            adj = 1.01
-        elif ttl <= 45:
             adj = 1.00
+        elif ttl <= 45:
+            adj = 0.98
         else:
-            adj = 0.97  # slight discount — more time to reverse
+            adj = 0.95  # early entries get discounted more
 
         return min(0.97, base * adj)
 
-    def _compute_size(self, entry_price: float, portfolio: float, is_live: bool) -> float:
-        """Dynamic position sizing based on entry price tier."""
-        # Base size from config
+    def _compute_size(self, entry_price: float, edge_pct: float,
+                      portfolio: float, is_live: bool) -> float:
+        """Dynamic position sizing.
+
+        Uses a simplified Kelly-informed approach:
+        - Base size from portfolio percentage
+        - Scaled by entry price tier
+        - Further scaled by edge magnitude (bigger edge = bigger bet)
+        """
+        # Base size
         base = portfolio * CFG.max_position_pct / 100
         base = min(base, CFG.max_position_usdc)
 
-        # Tier multiplier: higher entry = more confident = bigger size
+        # Tier multiplier
         if entry_price >= 0.85:
             mult = CFG.size_mult_high
         elif entry_price >= 0.70:
@@ -239,7 +256,18 @@ class HybridEngine:
         else:
             mult = CFG.size_mult_low
 
-        size = base * mult
+        # Edge scaling: scale size by edge confidence
+        # Edge of 1% → 0.7x, edge of 5% → 1.0x, edge of 10%+ → 1.2x
+        if edge_pct >= 10:
+            edge_mult = 1.2
+        elif edge_pct >= 5:
+            edge_mult = 1.0
+        elif edge_pct >= 2:
+            edge_mult = 0.85
+        else:
+            edge_mult = 0.7
+
+        size = base * mult * edge_mult
 
         if is_live:
             size = min(size, CFG.live_max_usdc)
