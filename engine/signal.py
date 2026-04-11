@@ -65,6 +65,13 @@ class HybridEngine:
         if oracle_says != token.direction:
             return None
 
+        # ── GATE 5b: Binance must agree with Chainlink direction ──
+        if CFG.require_binance_agrees:
+            if not self.feeds.binance_agrees(asset, oracle_says):
+                log.debug("SKIP %s %s: Binance disagrees with Chainlink",
+                          asset, oracle_says)
+                return None
+
         # ── GATE 6: Token price in range ──────────────────────────
         price = token.book_price
         if price < CFG.min_token_price or price > CFG.max_token_price:

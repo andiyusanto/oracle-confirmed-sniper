@@ -59,6 +59,12 @@ class Config:
     min_token_price: float = 0.55       # keep aggressive for volume
     max_token_price: float = 0.95
 
+    # ── Oracle source ────────────────────────────────────────────────
+    # Require Binance to agree with Chainlink direction before trading.
+    # Both sources must show the same direction (UP/DOWN) vs window open.
+    # If Binance feed is stale (>30s), this check is skipped automatically.
+    require_binance_agrees: bool = True
+
     # ── Confidence scoring ──────────────────────────────────────────
     min_confidence: float = 35.0        # base threshold
     min_confidence_strong: float = 30.0 # lower bar for strong deltas

@@ -149,11 +149,35 @@ class PriceFeeds:
         return (current - opening) / opening * 100
 
     def binance_agrees(self, asset: str, oracle_says: str) -> bool:
-        """Check if Binance momentum direction matches oracle.
+        """Check if Binance price direction agrees with Chainlink oracle.
 
-        Kept as stub per user request — always returns True.
+        Compares Binance current price against the window opening price.
+        Returns True if both sources agree on direction (UP or DOWN).
+        Returns True if Binance data is stale (>30s) to avoid blocking
+        valid signals during Binance feed outages.
         """
-        return True
+        # If Binance data is stale, don't penalise — CL is the authority
+        bn_age = time.time() - self.bn_ts.get(asset, 0)
+        if bn_age > 30:
+            return True
+
+        bn_price = self.binance.get(asset, 0)
+        if bn_price <= 0:
+            return True
+
+        # Find the most recent window opening we have
+        openings = self.openings.get(asset, {})
+        if not openings:
+            return True
+
+        latest_window_ts = max(openings.keys())
+        opening = openings[latest_window_ts]
+        if opening <= 0:
+            return True
+
+        bn_delta = (bn_price - opening) / opening * 100
+        bn_says = "UP" if bn_delta > 0 else "DOWN"
+        return bn_says == oracle_says
 
     def chainlink_staleness(self, asset: str) -> float:
         """Seconds since last Chainlink update."""
