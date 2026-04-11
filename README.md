@@ -65,24 +65,37 @@ oracle-confirmed-sniper/
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill in your credentials:
+### Polymarket Credentials
 
-```bash
-cp .env.example .env
-```
+API credentials are generated automatically from your wallet private key using `setup.py`. You never need to manually copy keys from the Polymarket dashboard.
+
+**Step 1** — Fill in `pre_setup.env` with your wallet details:
 
 ```env
 POLY_PRIVATE_KEY=0x...
-POLY_API_KEY=
-POLY_API_SECRET=
-POLY_API_PASSPHRASE=
-POLY_FUNDER_ADDRESS=
-POLY_SIG_TYPE=0
+POLY_FUNDER_ADDRESS=0x...
+```
 
-# Optional: Telegram alerts
+**Step 2** — Run the credential generator:
+
+```bash
+python3 setup.py
+```
+
+This will:
+- Connect to Polymarket's CLOB using your private key
+- Derive (or create) API key, secret, and passphrase
+- Set the USDC.e spending allowance on-chain
+- Write everything to `.env` automatically
+
+**Step 3** — Optionally add Telegram alerts to `.env`:
+
+```env
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
+
+> You only need to run `setup.py` once per wallet. Re-running it is safe — it derives the same credentials from the same key.
 
 ## Usage
 
@@ -148,7 +161,9 @@ bash setup_gcp.sh
 ### 4. Configure credentials
 
 ```bash
-nano ~/polymarket-bot/.env
+cd ~/polymarket-bot
+nano pre_setup.env   # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
+python3 setup.py     # generates .env automatically
 ```
 
 ### 5. Test with paper mode, then go live
