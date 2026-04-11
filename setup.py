@@ -74,6 +74,20 @@ def run_setup():
     set_key(OUTPUT_FILE, "POLY_API_PASSPHRASE", creds.api_passphrase)
     set_key(OUTPUT_FILE, "POLY_SIG_TYPE", "0")
 
+    # ── Re-initialize client with full Level 2 credentials ───────
+    from py_clob_client.clob_types import ApiCreds
+    client = ClobClient(
+        host="https://clob.polymarket.com",
+        key=pk,
+        chain_id=POLYGON,
+        funder=funder or None,
+        creds=ApiCreds(
+            api_key=creds.api_key,
+            api_secret=creds.api_secret,
+            api_passphrase=creds.api_passphrase,
+        ),
+    )
+
     # ── Set allowance ─────────────────────────────────────────────
     print("\n--- 🛡️ Setting USDC.e Allowance ---")
     try:
