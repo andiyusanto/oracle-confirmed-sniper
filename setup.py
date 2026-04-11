@@ -20,6 +20,7 @@ import sys
 from dotenv import dotenv_values, set_key
 from py_clob_client.client import ClobClient
 from py_clob_client.constants import POLYGON
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
 PRE_SETUP_FILE = "pre_setup.env"
 OUTPUT_FILE = ".env"
@@ -76,7 +77,9 @@ def run_setup():
     # ── Set allowance ─────────────────────────────────────────────
     print("\n--- 🛡️ Setting USDC.e Allowance ---")
     try:
-        client.set_allowance()
+        client.update_balance_allowance(
+            params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
         print("  ✅ Allowance set.")
     except Exception as e:
         print(f"  ⚠️  Allowance failed (may already be set): {e}")
