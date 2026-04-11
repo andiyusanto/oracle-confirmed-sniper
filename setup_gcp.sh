@@ -6,13 +6,13 @@
 #
 # Instance creation (run from your local machine):
 #   gcloud compute instances create polymarket-bot \
-#     --zone=europe-west1-b \
-#     --machine-type=e2-small \
-#     --network-tier=PREMIUM \
-#     --image-family=ubuntu-2404-lts-amd64 \
-#     --image-project=ubuntu-os-cloud \
-#     --boot-disk-size=20GB \
-#     --boot-disk-type=pd-balanced
+#   --zone=europe-southwest1-a \
+#   --machine-type=e2-small \
+#   --network-tier=PREMIUM \
+#   --image-family=ubuntu-2404-lts-amd64 \
+#   --image-project=ubuntu-os-cloud \
+#   --boot-disk-size=20GB \
+#   --boot-disk-type=pd-balanced
 #
 # NOTE: Do NOT use europe-west2 (London) — UK is geoblocked by Polymarket.
 #       europe-west1 (Belgium) gives ~5ms latency to Polymarket's London CLOB.

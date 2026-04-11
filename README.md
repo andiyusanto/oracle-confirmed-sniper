@@ -34,23 +34,32 @@ Scores combine four components (max 100):
 
 ```
 oracle-confirmed-sniper/
-├── bot.py          # Main entry point and event loop
-├── config.py       # All tunable parameters (CFG)
-├── models.py       # Data classes: Token, OracleState, Signal, Trade
-├── signal.py       # HybridEngine: signal evaluation and sizing
-├── risk.py         # RiskManager: kill switches, daily caps
-├── executor.py     # Trade execution (paper and live)
-├── markets.py      # Market discovery via Gamma API
-├── prices.py       # Price feeds: Chainlink (RTDS) + Binance WebSocket
-├── database.py     # SQLite persistence
-├── dashboard.py    # Rich terminal UI
-├── analyze.py      # Post-session trade analysis
-└── .env.example    # Environment variable template
+├── bot.py              # Main entry point and event loop
+├── analyze.py          # Shim: python3 analyze.py <args> (calls analysis/analyze.py)
+├── setup_gcp.sh        # One-shot GCP server setup script
+├── requirements.txt
+├── .env.example
+├── core/
+│   ├── config.py       # All tunable parameters (CFG)
+│   ├── models.py       # Data classes: Token, OracleState, Signal, Trade
+│   └── database.py     # SQLite persistence
+├── feeds/
+│   ├── prices.py       # Price feeds: Chainlink (RTDS) + Binance WebSocket
+│   └── markets.py      # Market discovery via Gamma API
+├── engine/
+│   ├── signal.py       # HybridEngine: signal evaluation and sizing
+│   └── risk.py         # RiskManager: kill switches, daily caps
+├── execution/
+│   └── executor.py     # Trade execution (paper and live)
+├── ui/
+│   └── dashboard.py    # Rich terminal UI
+└── analysis/
+    └── analyze.py      # Trade analysis with --watch mode
 ```
 
 ## Setup
 
-**Requirements:** Python 3.10+
+**Requirements:** Python 3.12+
 
 ```bash
 pip install -r requirements.txt
@@ -80,11 +89,8 @@ TELEGRAM_CHAT_ID=
 ### Paper mode (default — no real money)
 
 ```bash
-python bot.py
-```
-
-```bash
-python bot.py --portfolio 500   # custom starting portfolio size
+python3 bot.py
+python3 bot.py --portfolio 500   # custom starting portfolio size
 ```
 
 ### Live mode
@@ -92,20 +98,81 @@ python bot.py --portfolio 500   # custom starting portfolio size
 Live mode requires three explicit flags as a safety gate:
 
 ```bash
-python bot.py --live --confirm-live --accept-risk
+python3 bot.py --live --confirm-live --accept-risk
 ```
 
 ### Analyze past trades
 
 ```bash
-python analyze.py                  # all history
-python analyze.py --days 7         # last 7 days
-python analyze.py --db path/to.db  # custom database
+python3 analyze.py                          # all history, one-shot
+python3 analyze.py --days 7                 # last 7 days, one-shot
+
+# Auto-refresh (built-in watch mode)
+python3 analyze.py --watch                  # refresh every 60s
+python3 analyze.py --watch --interval 30    # refresh every 30s
+python3 analyze.py --watch --interval 60 --days 7
 ```
+
+The watch mode clears the terminal on each cycle and shows a live countdown to the next refresh. Press `Ctrl+C` to exit.
 
 Analysis output includes: overall P&L, win rate, expectancy, and breakdowns by asset/direction, entry price tier, oracle delta magnitude, time remaining, hour of day, and daily.
 
-## Key Parameters (`config.py`)
+## GCP Deployment
+
+The included `setup_gcp.sh` automates server setup on a GCP instance.
+
+### 1. Create the instance (from your local machine)
+
+```bash
+gcloud compute instances create polymarket-bot \
+  --zone=europe-southwest1-a \
+  --machine-type=e2-small \
+  --network-tier=PREMIUM \
+  --image-family=ubuntu-2404-lts-amd64 \
+  --image-project=ubuntu-os-cloud \
+  --boot-disk-size=20GB \
+  --boot-disk-type=pd-balanced
+```
+
+> **Important:** Do NOT use `europe-west2` (London) — UK is geoblocked by Polymarket. `europe-southwest1` (Madrid) is used instead.
+
+### 2. SSH in and clone the repo
+
+```bash
+gcloud compute ssh polymarket-bot --zone=europe-southwest1-a
+git clone https://github.com/andiyusanto/oracle-confirmed-sniper.git ~/polymarket-bot
+cd ~/polymarket-bot
+bash setup_gcp.sh
+```
+
+### 4. Configure credentials
+
+```bash
+nano ~/polymarket-bot/.env
+```
+
+### 5. Test with paper mode, then go live
+
+```bash
+~/paper.sh           # paper mode with $1000 portfolio
+~/start-bot.sh       # start live via systemd (auto-restarts on crash/reboot)
+```
+
+### Helper scripts (created by setup_gcp.sh)
+
+| Script | Description |
+|---|---|
+| `~/start-bot.sh` | Start the bot as a systemd service |
+| `~/stop-bot.sh` | Stop the bot |
+| `~/logs.sh` | Tail `hybrid.log` |
+| `~/analyze.sh [args]` | Run trade analysis (e.g. `~/analyze.sh --days 7`) |
+| `~/paper.sh [portfolio]` | Run in paper mode (e.g. `~/paper.sh 500`) |
+
+```bash
+sudo systemctl status polymarket-bot   # check running status
+```
+
+## Key Parameters (`core/config.py`)
 
 ### Timing
 | Parameter | Default | Description |
@@ -154,7 +221,7 @@ Trades are stored in `hybrid_trades.db` (SQLite). Logs are written to `hybrid.lo
 
 ## Markets Supported
 
-BTC and ETH 5-minute Polymarket prediction markets (configurable in `config.py` via `assets` and `durations`). 15-minute markets can be enabled by uncommenting the `durations` line in config.
+BTC and ETH 5-minute Polymarket prediction markets (configurable in `core/config.py` via `assets` and `durations`). 15-minute markets can be enabled by uncommenting the `durations` line in config.
 
 ## Risk Disclaimer
 
