@@ -96,7 +96,31 @@ def run_setup():
         )
         print("  ✅ Allowance set.")
     except Exception as e:
-        print(f"  ⚠️  Allowance failed (may already be set): {e}")
+        print(f"  ⚠️  Allowance failed: {e}")
+
+    # ── Verify allowance was actually registered ──────────────────
+    print("\n--- 🔍 Verifying Balance & Allowance ---")
+    try:
+        resp = client.get_balance_allowance(
+            params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        raw_balance = resp.get("balance", 0) if isinstance(resp, dict) else getattr(resp, "balance", 0)
+        raw_allowance = resp.get("allowance", 0) if isinstance(resp, dict) else getattr(resp, "allowance", 0)
+        balance = float(raw_balance or 0)
+        allowance = float(raw_allowance or 0)
+        if balance > 1_000_000:
+            balance /= 1e6
+        if allowance > 1_000_000:
+            allowance /= 1e6
+        print(f"  Balance:   ${balance:.2f} USDC")
+        print(f"  Allowance: ${allowance:.2f} USDC")
+        if allowance == 0:
+            print("  ❌ Allowance is still 0 — the bot will not be able to trade!")
+            print("     Try running setup.py again, or approve manually on app.polymarket.com")
+        else:
+            print("  ✅ Allowance confirmed. Bot is ready to trade.")
+    except Exception as e:
+        print(f"  ⚠️  Could not verify: {e}")
 
     print(f"\n✅ Done! Credentials written to '{OUTPUT_FILE}'")
     print(f"   You can now run: python bot.py")
