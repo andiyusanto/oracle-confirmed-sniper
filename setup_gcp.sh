@@ -33,7 +33,7 @@ echo "============================================"
 # ── 1. System packages ────────────────────────────────────────
 echo "[1/6] Installing system packages..."
 sudo apt update -qq
-sudo apt install -y -qq python3.12 python3.12-venv python3-pip git unzip screen
+sudo apt install -y -qq python3.12 python3.12-venv python3-pip git unzip screen tmux
 
 # ── 2. Clone or upload the bot ────────────────────────────────
 echo "[2/6] Setting up bot directory..."

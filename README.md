@@ -172,6 +172,49 @@ nano ~/polymarket-bot/.env
 sudo systemctl status polymarket-bot   # check running status
 ```
 
+### tmux Setup (recommended for manual runs)
+
+tmux keeps the bot and analyzer running after you disconnect from SSH. `setup_gcp.sh` installs it automatically.
+
+**First time — create the session:**
+
+```bash
+# Create a named session with two windows
+tmux new-session -d -s bot -n bot
+tmux new-window -t bot -n analyze
+
+# Window 1 (bot): run the bot
+tmux send-keys -t bot:bot "cd ~/polymarket-bot && source venv/bin/activate && python3 bot.py --portfolio 1000" Enter
+
+# Window 2 (analyze): live analysis dashboard
+tmux send-keys -t bot:analyze "cd ~/polymarket-bot && source venv/bin/activate && python3 analyze.py --watch --interval 60 --days 7" Enter
+
+# Attach to the session
+tmux attach -t bot
+```
+
+**Navigating inside tmux:**
+
+| Key | Action |
+|---|---|
+| `Ctrl+B, 0` | Switch to bot window |
+| `Ctrl+B, 1` | Switch to analyze window |
+| `Ctrl+B, d` | Detach (session keeps running) |
+| `Ctrl+B, [` | Scroll mode (use arrow keys, `q` to exit) |
+
+**Reconnect after SSH logout:**
+
+```bash
+tmux attach -t bot
+```
+
+**Other useful commands:**
+
+```bash
+tmux ls                        # list sessions
+tmux kill-session -t bot       # stop everything
+```
+
 ## Key Parameters (`core/config.py`)
 
 ### Timing
