@@ -2,6 +2,84 @@
 
 A Polymarket trading bot that combines **oracle-lead detection** with **end-cycle sniping** on BTC and ETH 5-minute prediction markets.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph External["External Sources"]
+        CL["Chainlink RTDS\nwss://ws-live-data.polymarket.com"]
+        BN["Binance WebSocket\nwss://data-stream.binance.com"]
+        GM["Polymarket Gamma API\ngamma-api.polymarket.com"]
+        CLOB["Polymarket CLOB\nclob.polymarket.com"]
+        POL["Polygon RPC\npolygon-rpc.com"]
+    end
+
+    subgraph Feeds["feeds/"]
+        PF["PriceFeeds\nprices.py\n· chainlink[asset]\n· binance[asset]\n· openings[asset][window_ts]\n· oracle_delta()\n· binance_agrees()"]
+        MD["MarketDiscovery\nmarkets.py\n· discover() every 30s\n· refresh_book(token)\n· tokens[token_id]"]
+    end
+
+    subgraph Engine["engine/"]
+        HE["HybridEngine\nsignal.py\n· evaluate(token)\n· 7-gate filter\n· confidence score\n· fair_value + edge"]
+        RM["RiskManager\nrisk.py\n· kill switch\n· daily P&L cap\n· concurrent limit"]
+    end
+
+    subgraph Execution["execution/"]
+        EX["Executor\nexecutor.py\n· execute(signal)\n· _execute_live()\n· close_expired()\n· _compute_pnl()"]
+    end
+
+    subgraph Core["core/"]
+        DB["Database\ndatabase.py\n· save_trade()\n· close_trade()\n· daily_stats()"]
+        CFG["Config\nconfig.py\n· all parameters\n· CFG singleton"]
+    end
+
+    subgraph UI["ui/ + notifications"]
+        DASH["Dashboard\ndashboard.py\n· Rich terminal UI\n· live refresh 2/s"]
+        TG["Telegram\ntelegram.py\n· bot start/stop\n· trade open/close\n· kill switch alert"]
+    end
+
+    subgraph Setup["setup scripts"]
+        SP["setup.py\n· derive API creds\n· write .env"]
+        AU["approve_usdc.py\n· on-chain approve()\n· both CLOB contracts"]
+    end
+
+    CL -->|"crypto_prices_chainlink\n~10s updates"| PF
+    BN -->|"bookTicker stream\nsub-second"| PF
+    GM -->|"slug lookup\ntoken IDs + prices"| MD
+    POL -->|"ERC20 approve tx"| AU
+
+    PF -->|"best_price()\noracle_delta()\nbinance_agrees()"| HE
+    MD -->|"Token objects\nbook_price"| HE
+    MD -->|"refresh_book()"| CLOB
+
+    HE -->|"Signal"| EX
+    RM -->|"can_trade()\ncheck_concurrent()"| EX
+    CFG -.->|"parameters"| HE
+    CFG -.->|"parameters"| RM
+    CFG -.->|"parameters"| EX
+
+    EX -->|"create_and_post_order()"| CLOB
+    EX -->|"save_trade()\nclose_trade()"| DB
+    EX -->|"trade events"| TG
+
+    DB -->|"stats"| DASH
+    PF -->|"live prices"| DASH
+    MD -->|"market count"| DASH
+    RM -->|"portfolio / risk state"| DASH
+    EX -->|"open positions"| DASH
+
+    SP -->|"API creds → .env"| CLOB
+    AU -->|"USDC.e allowance"| POL
+
+    style External fill:#1a1a2e,stroke:#4a4a8a,color:#fff
+    style Feeds fill:#16213e,stroke:#4a4a8a,color:#fff
+    style Engine fill:#0f3460,stroke:#4a4a8a,color:#fff
+    style Execution fill:#533483,stroke:#8a4aaa,color:#fff
+    style Core fill:#1a1a2e,stroke:#4a4a8a,color:#fff
+    style UI fill:#1a2e1a,stroke:#4a8a4a,color:#fff
+    style Setup fill:#2e1a1a,stroke:#8a4a4a,color:#fff
+```
+
 ## How It Works
 
 The bot exploits a structural edge: Chainlink oracle prices resolve Polymarket's 5-minute crypto markets, but the oracle answer is publicly readable seconds before resolution. When the oracle has moved significantly from the window's opening price, the outcome is largely determined — yet tokens may still be priced below $1.00.
