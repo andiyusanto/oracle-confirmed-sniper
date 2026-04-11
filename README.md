@@ -13,11 +13,11 @@ The bot exploits a structural edge: Chainlink oracle prices resolve Polymarket's
 | 1 — Oracle watch | T-120s to T-60s | Monitor Chainlink delta vs. opening price; build conviction |
 | 2 — Snipe execution | T-60s to T-3s | If oracle confirms AND token is in range → execute |
 
-**All four conditions must be true to trade:**
-1. Time remaining is within the snipe window (T-60s to T-3s)
+**All conditions must be true to trade:**
+1. Time remaining is within the snipe window (T-60s to T-3s, tiered by delta strength)
 2. Chainlink oracle has moved at least `min_delta_pct` from the window's opening price
 3. Token price is in the range $0.55–$0.95 (market partially agrees, room for profit)
-4. Combined confidence score exceeds threshold (default: 35/100)
+4. Combined confidence score exceeds threshold
 
 ## Confidence Scoring
 
@@ -36,13 +36,17 @@ Scores combine four components (max 100):
 oracle-confirmed-sniper/
 ├── bot.py              # Main entry point and event loop
 ├── analyze.py          # Shim: python3 analyze.py <args> (calls analysis/analyze.py)
+├── setup.py            # Generates API credentials from wallet key → writes .env
+├── approve_usdc.py     # On-chain USDC.e approve() for both CLOB spender contracts
 ├── setup_gcp.sh        # One-shot GCP server setup script
 ├── requirements.txt
 ├── .env.example
+├── pre_setup.env       # Fill with private key + funder address before running setup.py
 ├── core/
 │   ├── config.py       # All tunable parameters (CFG)
 │   ├── models.py       # Data classes: Token, OracleState, Signal, Trade
-│   └── database.py     # SQLite persistence
+│   ├── database.py     # SQLite persistence
+│   └── telegram.py     # Telegram notifications
 ├── feeds/
 │   ├── prices.py       # Price feeds: Chainlink (RTDS) + Binance WebSocket
 │   └── markets.py      # Market discovery via Gamma API
@@ -65,37 +69,55 @@ oracle-confirmed-sniper/
 pip install -r requirements.txt
 ```
 
-### Polymarket Credentials
+### Step 1 — Polymarket API Credentials
 
-API credentials are generated automatically from your wallet private key using `setup.py`. You never need to manually copy keys from the Polymarket dashboard.
-
-**Step 1** — Fill in `pre_setup.env` with your wallet details:
+Fill in `pre_setup.env` with your wallet details:
 
 ```env
 POLY_PRIVATE_KEY=0x...
 POLY_FUNDER_ADDRESS=0x...
 ```
 
-**Step 2** — Run the credential generator:
+Then run:
 
 ```bash
 python3 setup.py
 ```
 
-This will:
-- Connect to Polymarket's CLOB using your private key
-- Derive (or create) API key, secret, and passphrase
-- Set the USDC.e spending allowance on-chain
-- Write everything to `.env` automatically
+This connects to Polymarket's CLOB using your private key, derives API key/secret/passphrase, and writes everything to `.env` automatically. Also attempts to set the USDC.e allowance via API.
 
-**Step 3** — Optionally add Telegram alerts to `.env`:
+> Re-running `setup.py` is safe — it derives the same credentials from the same key.
 
-```env
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+### Step 2 — On-Chain USDC.e Approval
+
+The API-based allowance sometimes doesn't register on-chain. Run this to submit the real `approve()` transaction directly to Polygon for both CLOB spender contracts:
+
+```bash
+python3 approve_usdc.py
 ```
 
-> You only need to run `setup.py` once per wallet. Re-running it is safe — it derives the same credentials from the same key.
+Expected output:
+```
+✅ CTF Exchange:          approved (max)
+✅ NegRisk CTF Exchange:  approved (max)
+```
+
+This only needs to be done once per wallet — the approval is permanent on-chain.
+
+> If you get `Could not connect to Polygon RPC`, the script automatically tries 5 different public RPC endpoints. Check your network if all fail.
+
+### Step 3 — Telegram Alerts (optional)
+
+Add to `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+The bot will send alerts for: bot start/stop, every trade opened, every trade closed (win/loss), kill switch activation.
+
+To get credentials: message `@BotFather` → `/newbot` for the token; message `@userinfobot` for your chat ID.
 
 ## Usage
 
@@ -128,8 +150,6 @@ python3 analyze.py --watch --interval 60 --days 7
 
 The watch mode clears the terminal on each cycle and shows a live countdown to the next refresh. Press `Ctrl+C` to exit.
 
-Analysis output includes: overall P&L, win rate, expectancy, and breakdowns by asset/direction, entry price tier, oracle delta magnitude, time remaining, hour of day, and daily.
-
 ## GCP Deployment
 
 The included `setup_gcp.sh` automates server setup on a GCP instance.
@@ -147,26 +167,26 @@ gcloud compute instances create polymarket-bot \
   --boot-disk-type=pd-balanced
 ```
 
-> **Important:** Do NOT use `europe-west2` (London) — UK is geoblocked by Polymarket. `europe-southwest1` (Madrid) is used instead.
+> **Important:** Do NOT use `europe-west2` (London) — UK is geoblocked by Polymarket. `europe-southwest1` (Madrid) is used instead. Run all bot commands from the GCP server — Polymarket is also geoblocked in Indonesia.
 
 ### 2. SSH in and clone the repo
 
 ```bash
 gcloud compute ssh polymarket-bot --zone=europe-southwest1-a
-git clone https://github.com/andiyusanto/oracle-confirmed-sniper.git ~/polymarket-bot
-cd ~/polymarket-bot
+git clone https://github.com/andiyusanto/oracle-confirmed-sniper.git ~/oracle-confirmed-sniper
+cd ~/oracle-confirmed-sniper
 bash setup_gcp.sh
 ```
 
-### 4. Configure credentials
+### 3. Configure credentials
 
 ```bash
-cd ~/polymarket-bot
-nano pre_setup.env   # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
-python3 setup.py     # generates .env automatically
+nano pre_setup.env          # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
+python3 setup.py            # generates .env automatically
+python3 approve_usdc.py     # approve USDC.e on-chain (required for live trading)
 ```
 
-### 5. Test with paper mode, then go live
+### 4. Test with paper mode, then go live
 
 ```bash
 ~/paper.sh           # paper mode with $1000 portfolio
@@ -194,15 +214,14 @@ tmux keeps the bot and analyzer running after you disconnect from SSH. `setup_gc
 **First time — create the session:**
 
 ```bash
-# Create a named session with two windows
 tmux new-session -d -s bot -n bot
 tmux new-window -t bot -n analyze
 
 # Window 1 (bot): run the bot
-tmux send-keys -t bot:bot "cd ~/polymarket-bot && source venv/bin/activate && python3 bot.py --portfolio 1000" Enter
+tmux send-keys -t bot:bot "cd ~/oracle-confirmed-sniper && source venv/bin/activate && python3 bot.py --live --confirm-live --accept-risk" Enter
 
 # Window 2 (analyze): live analysis dashboard
-tmux send-keys -t bot:analyze "cd ~/polymarket-bot && source venv/bin/activate && python3 analyze.py --watch --interval 60 --days 7" Enter
+tmux send-keys -t bot:analyze "cd ~/oracle-confirmed-sniper && source venv/bin/activate && python3 analyze.py --watch --interval 60 --days 7" Enter
 
 # Attach to the session
 tmux attach -t bot
@@ -235,7 +254,9 @@ tmux kill-session -t bot       # stop everything
 ### Timing
 | Parameter | Default | Description |
 |---|---|---|
-| `snipe_entry_sec` | 60s | Start of execution window (T-60s) |
+| `snipe_entry_sec` | 60s | Max entry window for extreme delta (T-60s) |
+| `snipe_entry_strong` | 45s | Max entry for strong delta (T-45s) |
+| `snipe_entry_weak` | 25s | Max entry for weak delta (T-25s) |
 | `snipe_exit_sec` | 3s | Stop entering at T-3s (fill time) |
 | `oracle_watch_sec` | 120s | Start watching oracle from T-120s |
 
@@ -258,12 +279,17 @@ tmux kill-session -t bot       # stop everything
 | `max_position_pct` | 3% | Max position as % of portfolio |
 | `max_position_usdc` | $30 | Hard cap per trade |
 | `live_max_usdc` | $10 | Safety cap in live mode |
-| `kelly_fraction` | 0.25 | Quarter-Kelly sizing |
 
-Size is also scaled by entry price tier:
+Size is scaled by entry price tier:
 - **$0.55–0.70** → 0.5× (higher risk, lower reward)
 - **$0.70–0.85** → 1.0× (standard)
 - **$0.85–0.95** → 1.3× (high confidence)
+
+Size is also scaled by edge magnitude:
+- **edge ≥ 10%** → 1.2×
+- **edge ≥ 5%** → 1.0×
+- **edge ≥ 2%** → 0.85×
+- **edge < 2%** → 0.7×
 
 ### Risk management
 | Parameter | Default | Description |
