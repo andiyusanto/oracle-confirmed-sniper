@@ -194,9 +194,13 @@ class MarketDiscovery:
                         if float(a.price) > 0]
                 bids = [float(b.price) for b in (book.bids or [])
                         if float(b.price) > 0]
-                ba = min(asks) if asks else 0.5
-                bb = max(bids) if bids else 0.5
-                return (ba + bb) / 2
+                # No asks = market fully priced in, nothing to buy.
+                # Return 0.99 so the signal engine's max_token_price
+                # check filters it out before execution.
+                if not asks:
+                    return 0.99
+                bb = max(bids) if bids else min(asks)
+                return (min(asks) + bb) / 2
 
             price = await loop.run_in_executor(self._executor, _fetch)
             self._book_cache[token.token_id] = (price, now)
