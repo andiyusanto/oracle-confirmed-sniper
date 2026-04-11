@@ -42,6 +42,11 @@ class Executor:
         self._last_order_ts = 0.0
         self._clob: Optional[object] = None
 
+        # Circuit breaker for fatal API errors (geoblock, auth failure)
+        self._circuit_open = False
+        self._circuit_reason = ""
+        self._circuit_ts = 0.0
+
         # Initialize authenticated CLOB client for live mode
         if is_live and HAS_CLOB:
             self._init_clob_client()
@@ -173,17 +178,15 @@ class Executor:
     def _execute_live(self, signal: Signal, trade: Trade) -> bool:
         """Place a real order on Polymarket.
 
-        Strategy:
-          1. Read the order book directly to get the real best ask
-          2. If best ask is above max_token_price → skip (market already priced in)
-          3. Place a GTC limit order at the best ask price (aggressive but controlled)
-          4. Fall back to create_and_post_order if market order fails
-
-        This avoids the "no match" error from calculate_market_price
-        which happens when the book is too thin for a FOK fill.
+        Includes circuit breaker: if a fatal error (geoblock, auth) is
+        detected, all future orders are blocked until bot restart.
         """
         if not self._clob:
             log.error("LIVE ORDER FAILED: CLOB client not initialized")
+            return False
+
+        # Circuit breaker: don't retry fatal errors
+        if self._circuit_open:
             return False
 
         try:
@@ -191,10 +194,6 @@ class Executor:
             book = self._clob.get_order_book(signal.token.token_id)
             asks = sorted(
                 [float(a.price) for a in (book.asks or []) if float(a.price) > 0]
-            )
-            bids = sorted(
-                [float(b.price) for b in (book.bids or []) if float(b.price) > 0],
-                reverse=True,
             )
 
             if not asks:
@@ -212,9 +211,6 @@ class Executor:
                             signal.token.asset, signal.token.direction)
                 return False
 
-            # Also check: is the real ask way higher than signal expected?
-            # If book mid was $0.725 but best ask is $0.92, the signal's
-            # edge calculation was based on stale data
             if best_ask > signal.entry_price + 0.10:
                 log.warning("LIVE SKIP: best ask $%.4f >> signal entry $%.4f "
                             "(stale book data) for %s %s",
@@ -226,7 +222,6 @@ class Executor:
             tick_size = self._clob.get_tick_size(signal.token.token_id)
 
             # Step 4: Place aggressive limit order at best ask
-            # Using GTC with short expiration as pseudo-IOC
             shares = round(signal.size_usdc / best_ask, 2)
             if shares < 0.01:
                 log.warning("LIVE SKIP: share size too small (%.4f)", shares)
@@ -268,6 +263,21 @@ class Executor:
                 return False
 
         except Exception as e:
+            err_str = str(e).lower()
+
+            # Circuit breaker: detect fatal errors that won't resolve by retrying
+            if any(fatal in err_str for fatal in [
+                "geoblock", "restricted in your region", "403",
+                "unauthorized", "invalid api key", "forbidden",
+            ]):
+                self._circuit_open = True
+                self._circuit_reason = str(e)
+                self._circuit_ts = time.time()
+                log.critical(
+                    "CIRCUIT BREAKER OPEN: %s — All live orders blocked. "
+                    "Fix the issue and restart the bot.", e)
+                return False
+
             log.error("LIVE ORDER EXCEPTION: %s", e, exc_info=True)
             return False
 
