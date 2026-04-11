@@ -214,7 +214,8 @@ class PriceFeeds:
                     self._binance_reconnects += 1
                     log.warning("Binance disconnected (%d total): %s",
                                 self._binance_reconnects, e)
-                    await asyncio.sleep(3)
+                    delay = min(3 * (2 ** min(self._binance_reconnects - 1, 4)), 60)
+                    await asyncio.sleep(delay)
 
     def _parse_rtds(self, raw: str):
         try:
