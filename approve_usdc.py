@@ -19,7 +19,13 @@ from dotenv import dotenv_values
 from web3 import Web3
 
 # ── Polygon contracts ─────────────────────────────────────────────────
-POLYGON_RPC = "https://polygon-rpc.com"
+POLYGON_RPCS = [
+    "https://polygon-rpc.com",
+    "https://rpc-mainnet.matic.quiknode.pro",
+    "https://polygon-mainnet.public.blastapi.io",
+    "https://matic-mainnet.chainstacklabs.com",
+    "https://rpc.ankr.com/polygon",
+]
 
 USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 
@@ -70,9 +76,19 @@ def main():
         print("❌ POLY_PRIVATE_KEY not found in .env")
         sys.exit(1)
 
-    w3 = Web3(Web3.HTTPProvider(POLYGON_RPC))
-    if not w3.is_connected():
-        print("❌ Could not connect to Polygon RPC. Try again.")
+    w3 = None
+    for rpc in POLYGON_RPCS:
+        try:
+            candidate = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
+            if candidate.is_connected():
+                print(f"  RPC:     {rpc}")
+                w3 = candidate
+                break
+        except Exception:
+            continue
+
+    if w3 is None:
+        print("❌ Could not connect to any Polygon RPC. Check network.")
         sys.exit(1)
 
     account = w3.eth.account.from_key(pk)
