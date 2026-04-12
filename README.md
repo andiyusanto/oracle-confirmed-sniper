@@ -1,6 +1,6 @@
 # Oracle-Confirmed Sniper (Strategy D)
 
-A Polymarket trading bot that combines **oracle-lead detection** with **end-cycle sniping** on BTC and ETH 5-minute prediction markets.
+A Polymarket trading bot that combines **oracle-lead detection** with **end-cycle sniping** on BTC, ETH and SOL 5-minute and 15-minute prediction markets.
 
 ## Architecture
 
@@ -39,9 +39,11 @@ flowchart TD
     end
 
     subgraph Setup["setup scripts"]
-        SP["setup.py\n· derive API creds\n· write .env"]
+        SP["setup.py\n· derive API creds\n· write .env\n· sync CLOB balance"]
         AU["approve_usdc.py\n· on-chain approve()\n· both CLOB contracts"]
         WD["withdraw.py\n· show balance\n· partial/full withdraw\n· yes/no confirm"]
+        RD["core/redeem.py\n· redeem_all_async()\n· web3 CTF on-chain\n· standard + neg-risk"]
+        RN["redeem_now.py\n· manual redemption\n· lists positions\n· yes/no confirm"]
     end
 
     CL -->|"crypto_prices_chainlink\n~10s updates"| PF
@@ -72,6 +74,9 @@ flowchart TD
     SP -->|"API creds → .env"| CLOB
     AU -->|"USDC.e allowance"| POL
     WD -->|"ERC20 transfer"| POL
+    RD -->|"redeemPositions()"| POL
+    RN -->|"calls"| RD
+    EX -->|"redeem_all_async()\nsync_balance()"| RD
 
     style External fill:#1a1a2e,stroke:#4a4a8a,color:#fff
     style Feeds fill:#16213e,stroke:#4a4a8a,color:#fff
@@ -243,6 +248,7 @@ oracle-confirmed-sniper/
 ├── setup.py            # Generates API credentials from wallet key → writes .env
 ├── approve_usdc.py     # On-chain USDC.e approve() for both CLOB spender contracts
 ├── withdraw.py         # Withdraw USDC.e from wallet — partial or full, with confirmation
+├── redeem_now.py       # Manual redemption: lists winning positions, yes/no confirm
 ├── setup_gcp.sh        # One-shot GCP server setup script
 ├── requirements.txt
 ├── .env.example
@@ -251,6 +257,7 @@ oracle-confirmed-sniper/
 │   ├── config.py       # All tunable parameters (CFG)
 │   ├── models.py       # Data classes: Token, OracleState, Signal, Trade
 │   ├── database.py     # SQLite persistence
+│   ├── redeem.py       # On-chain CTF redemption (standard + neg-risk) via web3
 │   └── telegram.py     # Telegram notifications
 ├── feeds/
 │   ├── prices.py       # Price feeds: Chainlink (RTDS) + Binance WebSocket
@@ -324,7 +331,27 @@ The bot will send alerts for: bot start/stop, every trade opened, every trade cl
 
 To get credentials: message `@BotFather` → `/newbot` for the token; message `@userinfobot` for your chat ID.
 
-### Step 4 — Withdraw P&L (when ready)
+### Step 4 — Redeem Winning Positions
+
+When a prediction market resolves in your favor, you hold conditional tokens worth $1.00 each. These must be redeemed back to USDC.e before you can trade or withdraw.
+
+**Automatic redemption** — the bot redeems and syncs automatically after a WIN in live mode. No action needed.
+
+**Manual redemption** — run anytime to redeem any unredeemed positions:
+
+```bash
+python3 redeem_now.py
+```
+
+The script will list every redeemable position with size and market type, ask for confirmation, then submit on-chain transactions. After redeeming, run `setup.py` to resync the CLOB ledger so the returned USDC.e becomes available for trading:
+
+```bash
+python3 setup.py   # syncs CLOB balance after redemption
+```
+
+> Redemption calls the CTF contract directly on Polygon — no Polymarket Builder API credentials needed. Only the private key from `.env` is used.
+
+### Step 5 — Withdraw P&L (when ready)
 
 P&L accumulates in your funder wallet on Polygon as USDC.e. Use `withdraw.py` to send any amount to any Polygon address:
 
@@ -364,7 +391,7 @@ The script will:
   ✅  Withdrawal confirmed! Block: 71234567
 ```
 
-> You need a small amount of MATIC for gas (~0.01 MATIC, worth cents). The script warns you if your MATIC balance is too low. Run this from the GCP server — `app.polymarket.com` is geoblocked in Indonesia.
+> You need a small amount of MATIC for gas (~0.01 MATIC, worth cents). The script warns you if your MATIC balance is too low. Run this from the GCP server — Polymarket is geoblocked in Indonesia.
 
 ## Usage
 
@@ -431,6 +458,10 @@ bash setup_gcp.sh
 nano pre_setup.env          # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
 python3 setup.py            # generates .env automatically
 python3 approve_usdc.py     # approve USDC.e on-chain (required for live trading)
+
+# Redeem any winning positions back to USDC.e:
+python3 redeem_now.py       # interactive redemption with position list + confirmation
+python3 setup.py            # re-sync CLOB balance after redemption
 
 # When you want to withdraw profits:
 python3 withdraw.py         # interactive withdrawal with balance display + confirmation
@@ -513,7 +544,7 @@ tmux kill-session -t bot       # stop everything
 ### Oracle thresholds
 | Parameter | Default | Description |
 |---|---|---|
-| `min_delta_pct` | 0.015% | Minimum delta to consider (~$10 at $67k BTC) |
+| `min_delta_pct` | 0.020% | Minimum delta to consider (~$13 at $67k BTC) |
 | `strong_delta_pct` | 0.05% | Strong signal threshold |
 | `extreme_delta_pct` | 0.10% | Near-certain outcome threshold |
 
@@ -546,8 +577,8 @@ Size is also scaled by edge magnitude:
 |---|---|---|
 | `kill_switch_drawdown_pct` | 15% | Hard stop for the day |
 | `max_daily_loss_pct` | 10% | Pause after 10% daily loss |
-| `max_daily_trades` | 100 | Cap for data collection |
-| `max_concurrent_positions` | 4 | Max simultaneous open positions |
+| `max_daily_trades` | 288 | ~3 assets × 2 durations × 48 windows/day |
+| `max_concurrent_positions` | 9 | 3 assets × 3 max simultaneous per asset |
 
 ## Data
 
@@ -555,30 +586,30 @@ Trades are stored in `hybrid_trades.db` (SQLite). Logs are written to `hybrid.lo
 
 ## Markets Supported
 
-BTC and ETH 5-minute Polymarket prediction markets (configurable in `core/config.py` via `assets` and `durations`). 15-minute markets can be enabled by uncommenting the `durations` line in config.
+BTC, ETH and SOL on both 5-minute and 15-minute Polymarket prediction markets. Configurable in `core/config.py` via `assets` and `durations` — adding or removing any asset automatically updates all WebSocket subscriptions, market discovery slugs and price routing.
 
 ## Performance Projections
 
-All projections assume the current config (`live_max_usdc = $10`, `max_position_usdc = $30`, maker rebate enabled, `require_binance_agrees = True`) with a $75 portfolio on 5-minute BTC + ETH markets.
+All projections assume the current config (`live_max_usdc = $10`, `max_position_usdc = $30`, maker rebate enabled, `require_binance_agrees = True`) with a $75 portfolio on BTC + ETH + SOL across 5-minute and 15-minute markets.
 
 ### Trade Count
 
 | Market condition | Trades/day | Notes |
 |---|---|---|
-| Quiet (low volatility) | 20–40 | Few delta triggers, BTC/ETH barely moves |
-| Normal | **50–70** | Typical session, mixed volatility |
-| Active (high volatility) | 80–100 | Capped by `max_daily_trades = 100` |
+| Quiet (low volatility) | 30–55 | Few delta triggers across all assets |
+| Normal | **80–110** | Typical session, mixed volatility |
+| Active (high volatility) | 130–160 | Capped by `max_daily_trades = 288` |
 
-**Filter cascade per 576 daily windows (288/asset × 2):**
+**Filter cascade per 1,152 daily windows (3 assets × 2 durations × 192 windows/day):**
 
 | Gate | Pass rate | Remaining |
 |---|---|---|
-| Delta ≥ 0.020% | ~45% | ~259 |
-| Price $0.55–$0.95 | ~55% | ~142 |
-| Confidence ≥ 35 | ~70% | ~100 |
-| Binance agrees with Chainlink | ~72% | ~72 |
-| Order book has asks | ~85% | ~61 |
-| Concurrent limit (4 max) | ~95% | **~58** |
+| Delta ≥ 0.020% | ~45% | ~518 |
+| Price $0.55–$0.95 | ~55% | ~285 |
+| Confidence ≥ 35 | ~70% | ~200 |
+| Binance agrees with Chainlink | ~72% | ~144 |
+| Order book has asks | ~85% | ~122 |
+| Concurrent limit (9 max) | ~95% | **~116** |
 
 ### Win Rate
 
@@ -611,23 +642,23 @@ The dual-source gate (`require_binance_agrees`) skews the trade mix toward stron
 
 > Breakeven is ~75% — this strategy only profits when win rate consistently exceeds that. The dual-source confirmation and extreme-delta filtering are what push WR above the break-even line.
 
-**Daily P&L scenarios** (60 trades/day, $6 avg size):
+**Daily P&L scenarios** (100 trades/day, $6 avg size):
 
 | Win Rate | Wins | Losses | Gross P&L | Notes |
 |---|---|---|---|---|
-| 65% | 39 | 21 | -$3.21 | Below breakeven |
-| 72% | 43 | 17 | +$25.20 | Marginal positive |
-| 78% | 47 | 13 | +$16.50/day | Target range |
-| 85% | 51 | 9 | +$48.00/day | High-conviction session |
+| 65% | 65 | 35 | -$5.35 | Below breakeven |
+| 72% | 72 | 28 | +$42.00 | Marginal positive |
+| 78% | 78 | 22 | +$27.50/day | Target range |
+| 85% | 85 | 15 | +$80.00/day | High-conviction session |
 
-**Monthly projection at 78% WR, 60 trades/day:**
+**Monthly projection at 78% WR, 100 trades/day:**
 
 | Metric | Value |
 |---|---|
-| Monthly trades | ~1,800 |
-| Expected P&L | +$495–$1,440 |
+| Monthly trades | ~3,000 |
+| Expected P&L | +$825–$2,400 |
 | Max drawdown risk | $75 × 15% = $11.25 kill switch |
-| Portfolio growth (78% WR) | +20–50% / month |
+| Portfolio growth (78% WR) | +35–80% / month |
 
 ### Key Risks to Projections
 
