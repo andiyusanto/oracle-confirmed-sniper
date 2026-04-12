@@ -107,7 +107,7 @@ def _fetch_redeemable_positions() -> list:
         return []
 
 
-def _redeem_one(w3: Web3, wallet: str, pos: dict) -> bool:
+def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int, gas_price: int) -> bool:
     """Submit a redemption transaction for a single position."""
     cid = pos.get("conditionId", pos.get("condition_id", ""))
     if not cid:
@@ -120,9 +120,6 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict) -> bool:
     market       = pos.get("title", cid[:12])
 
     try:
-        nonce     = w3.eth.get_transaction_count(wallet)
-        gas_price = w3.eth.gas_price
-
         if neg_risk is True:
             # Neg-risk: redeemPositions(bytes32 conditionId, uint256[] amounts)
             size_raw      = int(float(pos.get("size", 0)) * 1e6)
@@ -201,12 +198,21 @@ def redeem_all() -> int:
         log.error("Cannot connect to Polygon RPC — skipping redemption")
         return 0
 
-    wallet   = Web3.to_checksum_address(CFG.funder_address)
-    redeemed = 0
+    wallet    = Web3.to_checksum_address(CFG.funder_address)
+    redeemed  = 0
+    # Fetch nonce and gas price once; increment nonce locally so rapid-fire
+    # txs don't collide in the mempool (avoids "replacement underpriced" /
+    # "nonce too low" errors when submitting many txs in a tight loop).
+    nonce     = w3.eth.get_transaction_count(wallet, "pending")
+    gas_price = w3.eth.gas_price
 
     for pos in positions:
-        if _redeem_one(w3, wallet, pos):
+        if _redeem_one(w3, wallet, pos, nonce, gas_price):
             redeemed += 1
+        # Always advance the nonce — even on failure the slot is consumed
+        # if the tx reached the mempool (skip-type failures return False
+        # before any send, but nonce advancing on those is harmless).
+        nonce += 1
 
     log.info("Redemption complete: %d/%d positions", redeemed, len(positions))
     return redeemed
