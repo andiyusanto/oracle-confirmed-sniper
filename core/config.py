@@ -87,8 +87,8 @@ class Config:
 
     # ── Risk management ─────────────────────────────────────────────
     kill_switch_drawdown_pct: float = 15.0
-    max_daily_trades: int = 100
-    max_concurrent_positions: int = 4
+    max_daily_trades: int = 200          # raised from 100 for 5m+15m combined
+    max_concurrent_positions: int = 6   # raised from 4 to handle 5m+15m overlap
     cooldown_sec: float = 0.5
     max_daily_loss_pct: float = 10.0
 
@@ -99,9 +99,7 @@ class Config:
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH"])
-    durations: list = field(default_factory=lambda: [("5m", 300)])
-    # Enable both 5m and 15m for ~2x more trade opportunities:
-    # durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
+    durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
 
     # ── Infrastructure ──────────────────────────────────────────────
     db_path: str = "hybrid_trades.db"
