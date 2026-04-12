@@ -78,7 +78,8 @@ class Config:
     max_position_pct: float = 3.0       # max 3% of portfolio
     max_position_usdc: float = 30.0     # hard cap
     kelly_fraction: float = 0.25        # quarter-Kelly
-    live_max_usdc: float = 10.0         # live safety cap
+    live_max_usdc: float = 15.0         # live safety cap (≥$4.75 needed for 5-share minimum)
+    min_shares: float = 5.0             # Polymarket minimum order size (shares)
 
     # ── Dynamic sizing by entry price ───────────────────────────────
     size_mult_low: float = 0.5          # $0.55-0.70: half size

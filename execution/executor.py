@@ -241,8 +241,9 @@ class Executor:
 
             # Step 4: Place aggressive limit order at best ask
             shares = round(signal.size_usdc / best_ask, 2)
-            if shares < 0.01:
-                log.warning("LIVE SKIP: share size too small (%.4f)", shares)
+            if shares < CFG.min_shares:
+                log.warning("LIVE SKIP: %.2f shares < minimum %.0f (size=$%.2f @ $%.4f)",
+                            shares, CFG.min_shares, signal.size_usdc, best_ask)
                 return False
 
             order_args = OrderArgs(

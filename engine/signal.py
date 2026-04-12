@@ -293,5 +293,10 @@ class HybridEngine:
 
         if is_live:
             size = min(size, CFG.live_max_usdc)
+            # Ensure size produces at least min_shares at this entry price
+            # (Polymarket rejects orders below 5 shares)
+            min_size_usdc = CFG.min_shares * entry_price
+            if size < min_size_usdc:
+                size = min_size_usdc
 
         return round(size, 2)
