@@ -1,10 +1,8 @@
 """
 Polymarket Position Redemption
 ================================
-Adapted from RobotTraders/bits_and_bobs/polymarket_redeem.py.
-
 Redeems resolved winning positions back to USDC.e in the funder wallet.
-Called automatically after every WIN in the bot loop.
+Uses direct on-chain web3 calls — no Relayer or Builder API credentials needed.
 
 Two market types handled:
   - Standard binary:  redeemPositions() on CTF contract
@@ -14,65 +12,68 @@ Two market types handled:
 import asyncio
 import logging
 import time
-from datetime import datetime
 
 import requests
+from web3 import Web3
 
 from core.config import CFG
 
 log = logging.getLogger("hybrid.redeem")
 
-# ── Polygon contract addresses ────────────────────────────────────────
-USDC_ADDRESS    = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-CTF_ADDRESS     = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+# ── Polygon RPCs ──────────────────────────────────────────────────────
+POLYGON_RPCS = [
+    "https://polygon-rpc.com",
+    "https://rpc-mainnet.matic.quiknode.pro",
+    "https://polygon-mainnet.public.blastapi.io",
+    "https://rpc.ankr.com/polygon",
+]
 
-RELAYER_RETRY_WAIT = 60  # seconds to wait on rate limit
+# ── Contract addresses (Polygon) ──────────────────────────────────────
+USDC_ADDRESS      = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+CTF_ADDRESS       = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
+NEG_RISK_ADAPTER  = Web3.to_checksum_address("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
 
-_ts = lambda: datetime.now().strftime("%H:%M:%S")
+DATA_API_RETRY_WAIT = 60
 
-# ── Lazy imports (optional deps) ──────────────────────────────────────
-try:
-    from eth_abi import encode as eth_encode
-    from eth_utils import keccak
-    from py_builder_relayer_client.client import RelayClient
-    from py_builder_relayer_client.models import (
-        RelayerTxType, OperationType, SafeTransaction,
-    )
-    from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
+# ── Contract ABIs (only functions we use) ────────────────────────────
+CTF_ABI = [
+    {
+        "name": "redeemPositions",
+        "type": "function",
+        "inputs": [
+            {"name": "collateralToken",    "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId",        "type": "bytes32"},
+            {"name": "indexSets",          "type": "uint256[]"},
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+]
 
-    REDEEM_SELECTOR      = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
-    NEG_RISK_REDEEM_SELECTOR = keccak(text="redeemPositions(bytes32,uint256[])")[:4]
+NEG_RISK_ABI = [
+    {
+        "name": "redeemPositions",
+        "type": "function",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "amounts",     "type": "uint256[]"},
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+]
 
-    HAS_RELAYER = True
-except ImportError:
-    HAS_RELAYER = False
-    log.warning(
-        "Redemption deps not installed. Run:\n"
-        "  pip install eth-abi eth-utils\n"
-        "  pip install git+https://github.com/Polymarket/py-builder-relayer-client.git\n"
-        "  pip install git+https://github.com/Polymarket/py-builder-signing-sdk.git"
-    )
 
-
-def _build_client():
-    """Build a RelayClient using credentials from CFG (.env)."""
-    wallet_type = (
-        RelayerTxType.PROXY if CFG.sig_type == 1 else RelayerTxType.SAFE
-    )
-    return RelayClient(
-        "https://relayer-v2.polymarket.com",
-        chain_id=137,
-        private_key=CFG.private_key,
-        builder_config=BuilderConfig(
-            local_builder_creds=BuilderApiKeyCreds(
-                key=CFG.api_key,
-                secret=CFG.api_secret,
-                passphrase=CFG.api_passphrase,
-            )
-        ),
-        relay_tx_type=wallet_type,
-    )
+def _connect() -> Web3:
+    for rpc in POLYGON_RPCS:
+        try:
+            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
+            if w3.is_connected():
+                return w3
+        except Exception:
+            continue
+    return None
 
 
 def _fetch_redeemable_positions() -> list:
@@ -88,8 +89,8 @@ def _fetch_redeemable_positions() -> list:
             timeout=15,
         )
         if resp.status_code in (429, 1015):
-            log.warning("Data API rate limited — waiting %ds", RELAYER_RETRY_WAIT)
-            time.sleep(RELAYER_RETRY_WAIT)
+            log.warning("Data API rate limited — waiting %ds", DATA_API_RETRY_WAIT)
+            time.sleep(DATA_API_RETRY_WAIT)
             resp = requests.get(
                 "https://data-api.polymarket.com/positions",
                 params={
@@ -100,56 +101,79 @@ def _fetch_redeemable_positions() -> list:
                 timeout=15,
             )
         positions = resp.json()
-        # Filter out zero-size dust the API sometimes returns post-redemption
         return [p for p in positions if float(p.get("size", 0)) > 0]
     except Exception as e:
         log.error("Failed to fetch redeemable positions: %s", e)
         return []
 
 
-def _build_txn(pos: dict):
-    """Build a SafeTransaction for one position. Returns None if unsupported."""
+def _redeem_one(w3: Web3, wallet: str, pos: dict) -> bool:
+    """Submit a redemption transaction for a single position."""
     cid = pos.get("conditionId", pos.get("condition_id", ""))
     if not cid:
-        return None, None
+        return False
     if not cid.startswith("0x"):
         cid = "0x" + cid
 
-    condition_bytes = bytes.fromhex(cid[2:])
-    neg_risk        = pos.get("negativeRisk")
-    market          = pos.get("title", cid[:12])
+    condition_id = bytes.fromhex(cid[2:])
+    neg_risk     = pos.get("negativeRisk")
+    market       = pos.get("title", cid[:12])
 
-    if neg_risk is True:
-        size_raw      = int(float(pos.get("size", 0)) * 1e6)
-        outcome_index = int(pos.get("outcomeIndex", 0))
-        amounts       = [0, 0]
-        amounts[outcome_index] = size_raw
-        args = eth_encode(["bytes32", "uint256[]"], [condition_bytes, amounts])
-        txn  = SafeTransaction(
-            to=NEG_RISK_ADAPTER,
-            operation=OperationType.Call,
-            data="0x" + (NEG_RISK_REDEEM_SELECTOR + args).hex(),
-            value="0",
-        )
-        return txn, market
+    try:
+        nonce     = w3.eth.get_transaction_count(wallet)
+        gas_price = w3.eth.gas_price
 
-    elif neg_risk is False:
-        args = eth_encode(
-            ["address", "bytes32", "bytes32", "uint256[]"],
-            [USDC_ADDRESS, b"\x00" * 32, condition_bytes, [1, 2]],
-        )
-        txn = SafeTransaction(
-            to=CTF_ADDRESS,
-            operation=OperationType.Call,
-            data="0x" + (REDEEM_SELECTOR + args).hex(),
-            value="0",
-        )
-        return txn, market
+        if neg_risk is True:
+            # Neg-risk: redeemPositions(bytes32 conditionId, uint256[] amounts)
+            size_raw      = int(float(pos.get("size", 0)) * 1e6)
+            outcome_index = int(pos.get("outcomeIndex", 0))
+            amounts       = [0, 0]
+            amounts[outcome_index] = size_raw
 
-    else:
-        log.warning("Skipping %s: unsupported market type (negativeRisk=%r)",
-                    market, neg_risk)
-        return None, market
+            contract = w3.eth.contract(address=NEG_RISK_ADAPTER, abi=NEG_RISK_ABI)
+            tx = contract.functions.redeemPositions(
+                condition_id, amounts
+            ).build_transaction({
+                "from":     wallet,
+                "nonce":    nonce,
+                "gas":      300_000,
+                "gasPrice": gas_price,
+                "chainId":  137,
+            })
+
+        elif neg_risk is False:
+            # Standard binary: redeemPositions(address, bytes32, bytes32, uint256[])
+            # indexSets [1, 2] covers both YES/NO — contract redeems whichever you hold
+            contract = w3.eth.contract(address=CTF_ADDRESS, abi=CTF_ABI)
+            tx = contract.functions.redeemPositions(
+                USDC_ADDRESS, b"\x00" * 32, condition_id, [1, 2]
+            ).build_transaction({
+                "from":     wallet,
+                "nonce":    nonce,
+                "gas":      300_000,
+                "gasPrice": gas_price,
+                "chainId":  137,
+            })
+
+        else:
+            log.warning("Skipping %s: unsupported market type (negativeRisk=%r)",
+                        market, neg_risk)
+            return False
+
+        signed  = w3.eth.account.sign_transaction(tx, CFG.private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+        if receipt.status == 1:
+            log.info("REDEEMED: %s (block %d)", market, receipt.blockNumber)
+            return True
+        else:
+            log.error("Redeem reverted for %s — tx: %s", market, tx_hash.hex())
+            return False
+
+    except Exception as e:
+        log.error("Failed to redeem %s: %s", market, e)
+        return False
 
 
 def redeem_all() -> int:
@@ -157,12 +181,12 @@ def redeem_all() -> int:
     Redeem all resolved positions. Returns count of redeemed positions.
     Blocking — run in a thread from async context.
     """
-    if not HAS_RELAYER:
-        log.warning("Skipping redemption: deps not installed")
+    if not CFG.private_key:
+        log.warning("Skipping redemption: POLY_PRIVATE_KEY not configured")
         return 0
 
-    if not CFG.private_key or not CFG.api_key:
-        log.warning("Skipping redemption: credentials not configured")
+    if not CFG.funder_address:
+        log.warning("Skipping redemption: POLY_FUNDER_ADDRESS not configured")
         return 0
 
     positions = _fetch_redeemable_positions()
@@ -170,33 +194,19 @@ def redeem_all() -> int:
         log.info("No positions to redeem")
         return 0
 
-    log.info("Found %d redeemable positions", len(positions))
-    client   = _build_client()
+    log.info("Found %d redeemable position(s)", len(positions))
+
+    w3 = _connect()
+    if not w3:
+        log.error("Cannot connect to Polygon RPC — skipping redemption")
+        return 0
+
+    wallet   = Web3.to_checksum_address(CFG.funder_address)
     redeemed = 0
 
     for pos in positions:
-        txn, market = _build_txn(pos)
-        if txn is None:
-            continue
-        try:
-            resp = client.execute([txn], f"redeem {market}")
-            resp.wait()
+        if _redeem_one(w3, wallet, pos):
             redeemed += 1
-            log.info("REDEEMED: %s", market)
-        except Exception as e:
-            status = getattr(e, "status_code", None)
-            if status in (429, 1015):
-                log.warning("Relayer rate limited — waiting %ds", RELAYER_RETRY_WAIT)
-                time.sleep(RELAYER_RETRY_WAIT)
-                try:
-                    resp = client.execute([txn], f"redeem {market}")
-                    resp.wait()
-                    redeemed += 1
-                    log.info("REDEEMED (retry): %s", market)
-                except Exception as e2:
-                    log.error("Failed to redeem %s after retry: %s", market, e2)
-            else:
-                log.error("Failed to redeem %s: %s", market, e)
 
     log.info("Redemption complete: %d/%d positions", redeemed, len(positions))
     return redeemed

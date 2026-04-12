@@ -9,7 +9,7 @@ Usage:
 """
 
 import sys
-from core.redeem import redeem_all, HAS_RELAYER, _fetch_redeemable_positions
+from core.redeem import redeem_all, _fetch_redeemable_positions
 from core.config import CFG
 
 SEPARATOR = "─" * 48
@@ -23,17 +23,8 @@ def main():
     print(f"  Wallet : {CFG.funder_address or '(not set)'}")
     print()
 
-    if not HAS_RELAYER:
-        print("  ❌  Missing dependencies. Install them first:")
-        print()
-        print("     pip install eth-abi eth-utils")
-        print("     pip install git+https://github.com/Polymarket/py-builder-relayer-client.git")
-        print("     pip install git+https://github.com/Polymarket/py-builder-signing-sdk.git")
-        print()
-        sys.exit(1)
-
-    if not CFG.private_key or not CFG.api_key:
-        print("  ❌  Credentials not found in .env")
+    if not CFG.private_key or not CFG.funder_address:
+        print("  ❌  POLY_PRIVATE_KEY / POLY_FUNDER_ADDRESS not found in .env")
         print("      Run python3 setup.py first.")
         print()
         sys.exit(1)
