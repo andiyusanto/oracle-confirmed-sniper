@@ -148,6 +148,18 @@ async def notify_daily_summary(stats: dict, portfolio: float) -> bool:
     return await send(msg)
 
 
+async def notify_redeemed(count: int, total_usdc: float) -> bool:
+    """Send alert when winning positions are redeemed on-chain."""
+    msg = (
+        f"💰 <b>REDEEMED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Positions: <b>{count}</b>\n"
+        f"Returned: <b>${total_usdc:.2f} USDC.e</b>\n"
+        f"✅ Back in wallet"
+    )
+    return await send(msg)
+
+
 async def notify_bot_start(mode: str, portfolio: float) -> bool:
     """Send alert when bot starts."""
     msg = (

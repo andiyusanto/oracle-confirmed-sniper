@@ -59,14 +59,14 @@ def main():
 
     # ── Execute ───────────────────────────────────────────────────────
     print()
-    count = redeem_all()
+    count, total_usdc = redeem_all()
 
     print()
     print(SEPARATOR)
     if count == len(positions):
-        print(f"  ✅  All {count} position(s) redeemed successfully.")
+        print(f"  ✅  All {count} position(s) redeemed — ${total_usdc:.2f} USDC.e back in wallet.")
     elif count > 0:
-        print(f"  ⚠️   {count}/{len(positions)} redeemed. Check logs for failures.")
+        print(f"  ⚠️   {count}/{len(positions)} redeemed (${total_usdc:.2f} USDC.e). Check logs for failures.")
     else:
         print("  ❌  No positions were redeemed. Check logs for errors.")
     print(SEPARATOR)

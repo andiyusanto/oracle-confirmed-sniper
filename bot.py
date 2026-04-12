@@ -149,6 +149,13 @@ async def run(is_live: bool, portfolio: float):
     mode_str = "LIVE" if is_live else "PAPER"
     await telegram.notify_bot_start(mode_str, portfolio)
 
+    # Pending redemption queue: timestamp when a WIN was detected.
+    # Polymarket Data API takes 1–3 min after resolution to list positions
+    # as redeemable, so we retry every 90s until count > 0.
+    _redeem_pending_ts: float = 0.0   # 0 = no pending redemption
+    _REDEEM_RETRY_INTERVAL = 90.0     # seconds between retry attempts
+    _REDEEM_MAX_WAIT = 600.0          # give up after 10 minutes
+
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
             while True:
@@ -160,23 +167,34 @@ async def run(is_live: bool, portfolio: float):
 
                 # Close expired positions + auto-redeem wins
                 closed = executor.close_expired()
-                has_win = False
                 for _, trade in closed:
                     risk.update_portfolio(trade.pnl)
                     await telegram.notify_trade_closed(trade)
                     if trade.pnl > 0 and is_live:
-                        has_win = True
+                        # Queue redemption — positions may not be redeemable
+                        # immediately; the retry loop below handles the delay.
+                        if _redeem_pending_ts == 0.0:
+                            _redeem_pending_ts = now
+                            log.info("WIN detected — redemption queued")
 
-                if has_win:
-                    count = await redeem.redeem_all_async()
-                    if count > 0:
-                        log.info("Auto-redeemed %d position(s) to wallet", count)
-                        # Sync the CLOB ledger so the exchange sees the
-                        # newly returned USDC.e and allows further orders
-                        executor.sync_balance()
-                        await telegram.send(
-                            f"💰 <b>REDEEMED</b> {count} position(s) → USDC.e back in wallet"
-                        )
+                # Retry redemption every 90s while pending
+                if is_live and _redeem_pending_ts > 0:
+                    waited = now - _redeem_pending_ts
+                    should_try = (
+                        waited < _REDEEM_MAX_WAIT and
+                        (now - _redeem_pending_ts) % _REDEEM_RETRY_INTERVAL < CFG.poll_interval * 2
+                    )
+                    if waited >= _REDEEM_MAX_WAIT:
+                        log.warning("Redemption gave up after %.0fs — run redeem_now.py manually", waited)
+                        _redeem_pending_ts = 0.0
+                    elif should_try:
+                        count, total_usdc = await redeem.redeem_all_async()
+                        if count > 0:
+                            log.info("Auto-redeemed %d position(s) ($%.2f USDC.e) to wallet",
+                                     count, total_usdc)
+                            executor.sync_balance()
+                            await telegram.notify_redeemed(count, total_usdc)
+                            _redeem_pending_ts = 0.0   # done
 
                 # Risk check
                 can_trade, reason = risk.can_trade()

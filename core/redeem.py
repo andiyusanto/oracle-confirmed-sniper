@@ -173,30 +173,32 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int, gas_price: int) ->
         return False
 
 
-def redeem_all() -> int:
+def redeem_all() -> tuple[int, float]:
     """
-    Redeem all resolved positions. Returns count of redeemed positions.
+    Redeem all resolved positions.
+    Returns (count_redeemed, total_usdc) tuple.
     Blocking — run in a thread from async context.
     """
     if not CFG.private_key:
         log.warning("Skipping redemption: POLY_PRIVATE_KEY not configured")
-        return 0
+        return 0, 0.0
 
     if not CFG.funder_address:
         log.warning("Skipping redemption: POLY_FUNDER_ADDRESS not configured")
-        return 0
+        return 0, 0.0
 
     positions = _fetch_redeemable_positions()
     if not positions:
         log.info("No positions to redeem")
-        return 0
+        return 0, 0.0
 
     log.info("Found %d redeemable position(s)", len(positions))
+    total_usdc = sum(float(p.get("size", 0)) for p in positions)
 
     w3 = _connect()
     if not w3:
         log.error("Cannot connect to Polygon RPC — skipping redemption")
-        return 0
+        return 0, 0.0
 
     wallet    = Web3.to_checksum_address(CFG.funder_address)
     redeemed  = 0
@@ -214,11 +216,12 @@ def redeem_all() -> int:
         # before any send, but nonce advancing on those is harmless).
         nonce += 1
 
-    log.info("Redemption complete: %d/%d positions", redeemed, len(positions))
-    return redeemed
+    log.info("Redemption complete: %d/%d positions ($%.2f USDC.e)",
+             redeemed, len(positions), total_usdc)
+    return redeemed, total_usdc
 
 
-async def redeem_all_async() -> int:
+async def redeem_all_async() -> tuple[int, float]:
     """
     Async wrapper — runs redeem_all() in a thread so it doesn't
     block the bot's event loop.
