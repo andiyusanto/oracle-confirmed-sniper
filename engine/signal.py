@@ -121,14 +121,27 @@ class HybridEngine:
             size_usdc=size, time_remaining=ttl,
         )
 
+        # ── Composite tier: delta + edge + confidence ─────────────
+        # Delta alone is misleading — a 0.36% delta with 0.6% edge and
+        # conf=79 is not EXTREME. Tier reflects actual trade quality.
+        if (abs_delta >= CFG.extreme_delta_pct
+                and edge_pct >= 2.0 and confidence >= 80):
+            tier = "EXTREME"
+        elif (abs_delta >= CFG.extreme_delta_pct
+              or (abs_delta >= CFG.strong_delta_pct and edge_pct >= 1.5
+                  and confidence >= 65)):
+            tier = "STRONG"
+        elif (abs_delta >= CFG.strong_delta_pct
+              or (abs_delta >= CFG.min_delta_pct and edge_pct >= 1.0)):
+            tier = "MEDIUM"
+        else:
+            tier = "WEAK"
+
         log.info(
             "SIGNAL %s %s @ $%.3f | delta=%.4f%% conf=%.0f edge=%.1f%% "
             "ttl=%.0fs size=$%.2f fair=$%.3f tier=%s",
             asset, oracle_says, price, delta, confidence, edge_pct,
-            ttl, size, fair_value,
-            "EXTREME" if abs_delta >= CFG.extreme_delta_pct
-            else "STRONG" if abs_delta >= CFG.strong_delta_pct
-            else "WEAK",
+            ttl, size, fair_value, tier,
         )
 
         return signal

@@ -582,13 +582,18 @@ All projections assume the current config (`live_max_usdc = $10`, `max_position_
 
 ### Win Rate
 
-The edge comes from Chainlink direction being confirmed before resolution. Observed market data by delta tier:
+The edge comes from Chainlink direction being confirmed before resolution. Observed market data by signal tier:
 
-| Delta tier | Range | Est. true WR | Token price | Net edge |
-|---|---|---|---|---|
-| Weak | 0.020–0.050% | 55–63% | $0.55–$0.75 | Marginal |
-| Strong | 0.050–0.100% | 63–78% | $0.65–$0.85 | Positive |
-| Extreme | >0.100% | 78–92% | $0.70–$0.95 | Strong |
+Tier classification uses **delta + edge + confidence** — not delta alone. A large oracle move with thin edge and moderate confidence is demoted from EXTREME even if delta > 0.10%:
+
+| Tier | Delta | Edge | Confidence | Est. true WR | Net edge |
+|---|---|---|---|---|---|
+| WEAK | 0.020–0.050% | any | any | 55–63% | Marginal |
+| MEDIUM | 0.050–0.100% | any | any | 60–68% | Low–Positive |
+| STRONG | ≥0.100% or strong+edge≥1.5% | ≥1.5% | ≥65 | 68–80% | Positive |
+| EXTREME | ≥0.100% | ≥2.0% | ≥80 | 80–92% | Strong |
+
+> Example from logs: `delta=0.36% conf=79 edge=0.6%` → **STRONG** (not EXTREME), because edge < 2.0% — the book had already priced in the move before execution.
 
 **Blended win rate projection: 62–72%**
 
