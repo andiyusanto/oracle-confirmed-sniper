@@ -87,8 +87,8 @@ class Config:
 
     # ── Risk management ─────────────────────────────────────────────
     kill_switch_drawdown_pct: float = 15.0
-    max_daily_trades: int = 200          # raised from 100 for 5m+15m combined
-    max_concurrent_positions: int = 6   # raised from 4 to handle 5m+15m overlap
+    max_daily_trades: int = 288          # ~3 assets × 2 durations × ~48 windows/day
+    max_concurrent_positions: int = 9   # 3 assets × 3 max concurrent per asset
     cooldown_sec: float = 0.5
     max_daily_loss_pct: float = 10.0
 
@@ -98,7 +98,7 @@ class Config:
     taker_fee_pct: float = 1.80
 
     # ── Market selection ────────────────────────────────────────────
-    assets: list = field(default_factory=lambda: ["BTC", "ETH"])
+    assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
     durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
 
     # ── Infrastructure ──────────────────────────────────────────────

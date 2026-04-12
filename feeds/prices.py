@@ -198,6 +198,9 @@ class PriceFeeds:
                     close_timeout=5,
                 ) as ws:
                     log.info("RTDS connected: %s", CFG.rtds_url)
+                    rtds_filters = ",".join(
+                        a.lower() + "usdt" for a in CFG.assets
+                    )
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [
@@ -205,7 +208,7 @@ class PriceFeeds:
                              "type": "update", "filters": ""},
                             {"topic": "crypto_prices",
                              "type": "update",
-                             "filters": "btcusdt,ethusdt"},
+                             "filters": rtds_filters},
                         ]
                     }))
                     async for raw in ws:
@@ -221,7 +224,7 @@ class PriceFeeds:
 
     async def run_binance(self):
         """Direct Binance WebSocket as backup/cross-check."""
-        symbols = "btcusdt@bookTicker/ethusdt@bookTicker"
+        symbols = "/".join(a.lower() + "usdt@bookTicker" for a in CFG.assets)
         while self._running:
             try:
                 url = f"{CFG.binance_ws}?streams={symbols}"
@@ -291,6 +294,8 @@ class PriceFeeds:
             return "BTC"
         if "eth" in s:
             return "ETH"
+        if "sol" in s:
+            return "SOL"
         return ""
 
     def stop(self):
