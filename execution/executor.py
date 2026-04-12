@@ -76,6 +76,24 @@ class Executor:
             log.error("Failed to init CLOB client: %s", e)
             self._clob = None
 
+    def sync_balance(self) -> bool:
+        """Tell Polymarket CLOB to resync its ledger from the on-chain balance.
+
+        Must be called after any on-chain redemption so the exchange sees
+        the newly returned USDC.e and allows further orders.
+        """
+        if not self._clob:
+            return False
+        try:
+            self._clob.update_balance_allowance(
+                params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            log.info("CLOB balance synced after redemption")
+            return True
+        except Exception as e:
+            log.warning("Failed to sync CLOB balance: %s", e)
+            return False
+
     def get_wallet_balance(self) -> float:
         """Fetch actual USDC balance from Polymarket wallet.
 
@@ -264,6 +282,14 @@ class Executor:
 
         except Exception as e:
             err_str = str(e).lower()
+
+            # Insufficient balance: sync CLOB ledger and skip this order
+            if "not enough balance" in err_str or "allowance" in err_str:
+                log.warning(
+                    "LIVE SKIP: insufficient CLOB balance — syncing ledger "
+                    "(redeem may not have been followed by balance sync)")
+                self.sync_balance()
+                return False
 
             # Circuit breaker: detect fatal errors that won't resolve by retrying
             if any(fatal in err_str for fatal in [

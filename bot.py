@@ -130,6 +130,9 @@ async def run(is_live: bool, portfolio: float):
                     count = await redeem.redeem_all_async()
                     if count > 0:
                         log.info("Auto-redeemed %d position(s) to wallet", count)
+                        # Sync the CLOB ledger so the exchange sees the
+                        # newly returned USDC.e and allows further orders
+                        executor.sync_balance()
                         await telegram.send(
                             f"💰 <b>REDEEMED</b> {count} position(s) → USDC.e back in wallet"
                         )
