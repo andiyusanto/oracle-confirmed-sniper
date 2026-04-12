@@ -99,6 +99,130 @@ The bot exploits a structural edge: Chainlink oracle prices resolve Polymarket's
 3. Token price is in the range $0.55–$0.95 (market partially agrees, room for profit)
 4. Combined confidence score exceeds threshold
 
+## Execution Model — Taker vs Maker
+
+### Concept
+
+In Polymarket's CLOB (Central Limit Order Book), every order is either a **maker** or a **taker**:
+
+```
+ORDER BOOK (ETH DOWN token)
+
+  ASKS (sellers)
+  ┌──────────────────────────────┐
+  │  $0.970  ←── best ask        │
+  │  $0.980                      │
+  │  $0.990                      │
+  └──────────────────────────────┘
+        spread
+  ┌──────────────────────────────┐
+  │  $0.930                      │
+  │  $0.920                      │
+  │  $0.910  ←── best bid        │
+  BIDS (buyers)
+```
+
+---
+
+#### Taker — cross the spread, fill immediately
+
+```
+You want to BUY → lift the best ask at $0.970
+
+  ASKS
+  ├── $0.970  ◄─── YOU HIT THIS  ✓ instant fill
+  ├── $0.980
+  └── $0.990
+
+  Result : filled immediately at $0.970
+  Fee    : -1.80% taker fee charged by Polymarket
+  Risk   : you accepted the market price, not your own
+```
+
+#### Maker — place your own bid, wait for fill
+
+```
+You want to BUY → post a limit bid at $0.940
+
+  ASKS
+  ├── $0.970
+  ├── $0.980
+  └── $0.990
+        ↕ spread
+  BIDS
+  ├── $0.940  ◄─── YOUR ORDER sits here
+  ├── $0.930
+  └── $0.920
+
+  Result : filled only if a seller comes down to $0.940
+  Fee    : 0% fee + +0.20% rebate paid to you
+  Risk   : may never fill if price moves away before TTL
+```
+
+---
+
+### Side-by-Side Comparison
+
+| | Taker | Maker |
+|--|--|--|
+| **Execution** | Immediate | Uncertain — waits for counterparty |
+| **Entry price** | Market price (worse) | Your price (better) |
+| **Polymarket fee** | **-1.80%** | **+0.20% rebate** |
+| **Fee delta** | — | **+2.0% advantage** |
+| **Good for** | Time-sensitive signals | Patient, high-liquidity markets |
+| **Bad for** | Thin-edge signals (fee eats it) | Short TTL windows (expires unfilled) |
+
+---
+
+### What This Bot Does
+
+The bot is a **taker** — it places orders at `best_ask`, crossing the spread for an immediate fill:
+
+```python
+# execution/executor.py:224
+# Step 4: Place aggressive limit order at best ask
+order_args = OrderArgs(
+    price=best_ask,   ← taker: lifts existing ask
+    ...
+)
+```
+
+This is the **correct choice** for this strategy. The signal TTL is 30–60 seconds — a maker
+bid sitting in the book would likely expire unfilled before anyone sells into it.
+
+```
+Signal fires at T-32s
+        │
+        ▼
+  Check best ask → $0.960
+        │
+        ├── best ask ≤ max $0.95? NO → SKIP
+        │
+        └── best ask ≤ max $0.95? YES → BUY at $0.960 (taker, instant)
+
+  Window closes at T-0s → outcome resolved
+```
+
+---
+
+### Known Issue — Fee Accounting Mismatch
+
+`use_maker = True` in `core/config.py` causes the bot to record P&L using the maker rebate
+(+0.20%) instead of the actual taker fee (-1.80%). This does **not** affect execution, but it
+overstates recorded P&L by ~2.0% per trade.
+
+```
+Actual cost per $6 trade:   -$0.108  (1.80% taker fee)
+Bot records per $6 trade:   +$0.012  (0.20% maker rebate)
+                             ───────
+P&L overcount per trade:    +$0.120
+```
+
+To fix, set `use_maker = False` in `core/config.py` — execution behavior is unchanged, only
+the fee math in `_compute_pnl()` is corrected.
+
+---
+
 ## Confidence Scoring
 
 Scores combine four components (max 100):
