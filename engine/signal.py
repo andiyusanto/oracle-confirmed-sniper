@@ -67,7 +67,8 @@ class HybridEngine:
 
         # ── GATE 5b: Binance must agree with Chainlink direction ──
         if CFG.require_binance_agrees:
-            if not self.feeds.binance_agrees(asset, oracle_says):
+            if not self.feeds.binance_agrees(asset, oracle_says,
+                                             token.window_ts):
                 log.debug("SKIP %s %s: Binance disagrees with Chainlink",
                           asset, oracle_says)
                 return None
@@ -110,7 +111,8 @@ class HybridEngine:
             opening_price=opening,
             current_price=self.feeds.best_price(asset),
             delta_pct=delta, oracle_says=oracle_says,
-            binance_agrees=self.feeds.binance_agrees(asset, oracle_says),
+            binance_agrees=self.feeds.binance_agrees(asset, oracle_says,
+                                                     token.window_ts),
             last_update=time.time(),
         )
 

@@ -148,10 +148,13 @@ class PriceFeeds:
             return 0.0
         return (current - opening) / opening * 100
 
-    def binance_agrees(self, asset: str, oracle_says: str) -> bool:
+    def binance_agrees(self, asset: str, oracle_says: str,
+                       window_ts: int = 0) -> bool:
         """Check if Binance price direction agrees with Chainlink oracle.
 
-        Compares Binance current price against the window opening price.
+        Compares Binance current price against the *specific window's*
+        opening price (passed via window_ts). Falls back to the most
+        recent window only when window_ts is not provided.
         Returns True if both sources agree on direction (UP or DOWN).
         Returns True if Binance data is stale (>30s) to avoid blocking
         valid signals during Binance feed outages.
@@ -165,13 +168,19 @@ class PriceFeeds:
         if bn_price <= 0:
             return True
 
-        # Find the most recent window opening we have
         openings = self.openings.get(asset, {})
         if not openings:
             return True
 
-        latest_window_ts = max(openings.keys())
-        opening = openings[latest_window_ts]
+        # Use the specific signal's window opening; fall back to latest
+        # only when window_ts is unknown (e.g. called from OracleState).
+        # Using max() was buggy: if a future window was already registered
+        # its opening ≈ current price → near-zero delta → random bn_says.
+        if window_ts and window_ts in openings:
+            opening = openings[window_ts]
+        else:
+            opening = openings[max(openings.keys())]
+
         if opening <= 0:
             return True
 

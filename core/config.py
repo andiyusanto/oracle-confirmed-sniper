@@ -45,7 +45,7 @@ class Config:
 
     # ── Window timing ───────────────────────────────────────────────
     oracle_watch_sec: float = 120.0     # start watching at T-120s
-    snipe_entry_sec: float = 55.0       # max entry window (extreme delta)
+    snipe_entry_sec: float = 60.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 45.0    # strong delta entry
     snipe_entry_weak: float = 25.0      # weak delta entry — tighter window
     snipe_exit_sec: float = 3.0         # stop at T-3s (need fill time)
