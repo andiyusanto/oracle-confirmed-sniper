@@ -41,6 +41,7 @@ flowchart TD
     subgraph Setup["setup scripts"]
         SP["setup.py\n· derive API creds\n· write .env"]
         AU["approve_usdc.py\n· on-chain approve()\n· both CLOB contracts"]
+        WD["withdraw.py\n· show balance\n· partial/full withdraw\n· yes/no confirm"]
     end
 
     CL -->|"crypto_prices_chainlink\n~10s updates"| PF
@@ -70,6 +71,7 @@ flowchart TD
 
     SP -->|"API creds → .env"| CLOB
     AU -->|"USDC.e allowance"| POL
+    WD -->|"ERC20 transfer"| POL
 
     style External fill:#1a1a2e,stroke:#4a4a8a,color:#fff
     style Feeds fill:#16213e,stroke:#4a4a8a,color:#fff
@@ -116,6 +118,7 @@ oracle-confirmed-sniper/
 ├── analyze.py          # Shim: python3 analyze.py <args> (calls analysis/analyze.py)
 ├── setup.py            # Generates API credentials from wallet key → writes .env
 ├── approve_usdc.py     # On-chain USDC.e approve() for both CLOB spender contracts
+├── withdraw.py         # Withdraw USDC.e from wallet — partial or full, with confirmation
 ├── setup_gcp.sh        # One-shot GCP server setup script
 ├── requirements.txt
 ├── .env.example
@@ -197,6 +200,48 @@ The bot will send alerts for: bot start/stop, every trade opened, every trade cl
 
 To get credentials: message `@BotFather` → `/newbot` for the token; message `@userinfobot` for your chat ID.
 
+### Step 4 — Withdraw P&L (when ready)
+
+P&L accumulates in your funder wallet on Polygon as USDC.e. Use `withdraw.py` to send any amount to any Polygon address:
+
+```bash
+python3 withdraw.py
+```
+
+The script will:
+1. Show your current USDC.e balance and MATIC gas balance
+2. Ask for a destination address
+3. Ask for amount — type a number or `all`
+4. Show a full summary (from, to, amount, remaining)
+5. Ask `yes/no` to confirm — nothing is sent until you type `yes`
+
+```
+────────────────────────────────────────────────
+  Polymarket Wallet
+────────────────────────────────────────────────
+  Address : 0xF04EF5B9...
+  USDC.e  : $89.43
+  MATIC   : 0.2341  (gas)
+────────────────────────────────────────────────
+
+  Destination address (Polygon): 0xYourWallet...
+  Amount to withdraw (or 'all'): 20
+
+────────────────────────────────────────────────
+  Withdrawal Summary
+────────────────────────────────────────────────
+  From      : 0xF04EF5B9...
+  To        : 0xYourWallet...
+  Amount    : $20.00 USDC.e
+  Remaining : $69.43 USDC.e
+────────────────────────────────────────────────
+
+  Confirm withdrawal? [yes/no]: yes
+  ✅  Withdrawal confirmed! Block: 71234567
+```
+
+> You need a small amount of MATIC for gas (~0.01 MATIC, worth cents). The script warns you if your MATIC balance is too low. Run this from the GCP server — `app.polymarket.com` is geoblocked in Indonesia.
+
 ## Usage
 
 ### Paper mode (default — no real money)
@@ -262,6 +307,9 @@ bash setup_gcp.sh
 nano pre_setup.env          # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
 python3 setup.py            # generates .env automatically
 python3 approve_usdc.py     # approve USDC.e on-chain (required for live trading)
+
+# When you want to withdraw profits:
+python3 withdraw.py         # interactive withdrawal with balance display + confirmation
 ```
 
 ### 4. Test with paper mode, then go live
