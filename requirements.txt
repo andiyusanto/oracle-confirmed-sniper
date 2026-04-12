@@ -5,3 +5,7 @@ rich>=13.7.0
 python-dotenv>=1.0.0
 httpx>=0.27.0
 web3>=6.0.0
+eth-abi>=4.0.0
+eth-utils>=2.0.0
+git+https://github.com/Polymarket/py-builder-relayer-client.git
+git+https://github.com/Polymarket/py-builder-signing-sdk.git

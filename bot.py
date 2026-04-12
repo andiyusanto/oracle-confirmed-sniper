@@ -28,6 +28,7 @@ from rich.live import Live
 from core.config import CFG
 from core.database import Database
 from core import telegram
+from core import redeem
 from feeds.prices import PriceFeeds
 from feeds.markets import MarketDiscovery
 from engine.signal import HybridEngine
@@ -116,11 +117,22 @@ async def run(is_live: bool, portfolio: float):
                 if markets.needs_refresh():
                     await markets.discover()
 
-                # Close expired positions
+                # Close expired positions + auto-redeem wins
                 closed = executor.close_expired()
+                has_win = False
                 for _, trade in closed:
                     risk.update_portfolio(trade.pnl)
                     await telegram.notify_trade_closed(trade)
+                    if trade.pnl > 0 and is_live:
+                        has_win = True
+
+                if has_win:
+                    count = await redeem.redeem_all_async()
+                    if count > 0:
+                        log.info("Auto-redeemed %d position(s) to wallet", count)
+                        await telegram.send(
+                            f"💰 <b>REDEEMED</b> {count} position(s) → USDC.e back in wallet"
+                        )
 
                 # Risk check
                 can_trade, reason = risk.can_trade()
