@@ -127,7 +127,7 @@ cat > ~/start-bot.sh << 'SCRIPT'
 sudo systemctl start polymarket-bot
 sudo systemctl enable polymarket-bot
 echo "Bot started. Check status: sudo systemctl status polymarket-bot"
-echo "View logs: tail -f ~/polymarket-bot/hybrid.log"
+echo "View logs: ~/logs.sh"
 SCRIPT
 chmod +x ~/start-bot.sh
 
@@ -139,10 +139,18 @@ echo "Bot stopped."
 SCRIPT
 chmod +x ~/stop-bot.sh
 
-# View logs
+# View logs (today's dated log file)
 cat > ~/logs.sh << 'SCRIPT'
 #!/bin/bash
-tail -f ~/polymarket-bot/hybrid.log
+TODAY=$(date +%Y-%m-%d)
+LOG_FILE=~/polymarket-bot/logs/${TODAY}_hybrid.log
+if [ -f "$LOG_FILE" ]; then
+    tail -f "$LOG_FILE"
+else
+    echo "No log file for today yet: $LOG_FILE"
+    echo "Available logs:"
+    ls ~/polymarket-bot/logs/ 2>/dev/null || echo "  (none)"
+fi
 SCRIPT
 chmod +x ~/logs.sh
 

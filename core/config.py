@@ -103,7 +103,7 @@ class Config:
 
     # ── Infrastructure ──────────────────────────────────────────────
     db_path: str = "hybrid_trades.db"
-    log_file: str = "hybrid.log"
+    log_dir: str = "logs"             # daily logs saved as logs/YYYY-MM-DD_hybrid.log
     poll_interval: float = 0.8
     discovery_interval: float = 30.0    # reduced from 45s — catch more windows
     book_cache_sec: float = 2.0

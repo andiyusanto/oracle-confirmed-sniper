@@ -20,8 +20,12 @@ Usage:
 import asyncio
 import argparse
 import logging
+import logging.handlers
+import os
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 from rich.live import Live
 
@@ -38,16 +42,53 @@ from ui.dashboard import Dashboard
 
 # ── Logging ─────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(CFG.log_file),
-        logging.StreamHandler(),
-    ],
-)
-for noisy in ("httpx", "httpcore", "websockets", "asyncio", "hpack", "h2"):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
+def _setup_logging():
+    """Configure logging with daily rotation into logs/ folder.
+
+    Active log  : logs/YYYY-MM-DD_hybrid.log  (today)
+    On midnight : rotates to logs/YYYY-MM-DD_hybrid.log (new date)
+    Retention   : 90 days
+    """
+    logs_dir = Path(CFG.log_dir)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    today    = datetime.now().strftime("%Y-%m-%d")
+    log_path = logs_dir / f"{today}_hybrid.log"
+
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        filename=str(log_path),
+        when="midnight",
+        backupCount=90,
+        encoding="utf-8",
+        utc=False,
+    )
+
+    # Rename rotated files from logs/YYYY-MM-DD_hybrid.log.YYYY-MM-DD
+    # to   logs/YYYY-MM-DD_hybrid.log  (next day's date as prefix)
+    def _namer(default_name: str) -> str:
+        base, date_suffix = default_name.rsplit(".", 1)
+        return str(logs_dir / f"{date_suffix}_hybrid.log")
+
+    file_handler.namer = _namer
+
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    file_handler.setFormatter(fmt)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+    root.addHandler(stream_handler)
+
+    for noisy in ("httpx", "httpcore", "websockets", "asyncio", "hpack", "h2"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    return str(log_path)
+
+
+_active_log = _setup_logging()
 
 log = logging.getLogger("hybrid.main")
 
