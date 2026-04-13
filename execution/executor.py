@@ -12,7 +12,7 @@ Fixes applied:
 import logging
 import time
 import uuid
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Optional
 
 from core.config import CFG
@@ -277,9 +277,22 @@ class Executor:
                 )
             )
             if shares < CFG.min_shares:
-                log.warning("LIVE SKIP: %.2f shares < minimum %.0f (size=$%.2f @ $%.4f)",
-                            shares, CFG.min_shares, signal.size_usdc, best_ask)
-                return False
+                # Bump size up to meet minimum rather than skip — rounding
+                # artifacts (e.g. $3.125 → $3.12) can cause 4.95 < 5 at a
+                # slightly different best_ask. Cap at live_max_usdc.
+                bumped = float(
+                    Decimal(str(CFG.min_shares * best_ask)).quantize(
+                        Decimal("0.01"), rounding=ROUND_UP
+                    )
+                )
+                if bumped > CFG.live_max_usdc:
+                    log.warning("LIVE SKIP: %.2f shares < minimum %.0f and "
+                                "bump $%.2f > live_max $%.2f",
+                                shares, CFG.min_shares, bumped, CFG.live_max_usdc)
+                    return False
+                log.info("LIVE BUMP: %.2f→%.0f shares, size $%.2f→$%.2f @ $%.4f",
+                         shares, CFG.min_shares, signal.size_usdc, bumped, best_ask)
+                shares = CFG.min_shares
 
             order_args = OrderArgs(
                 token_id=signal.token.token_id,
