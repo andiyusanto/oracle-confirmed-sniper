@@ -109,8 +109,11 @@ async def run(is_live: bool, portfolio: float):
     engine = HybridEngine(feeds)
     executor = Executor(db, feeds, is_live)
 
-    # In live mode, fetch actual wallet balance as portfolio value
+    # In live mode, fetch actual wallet balance as portfolio value.
+    # sync_balance() must run first — it tells the CLOB to refresh its ledger
+    # from on-chain state so get_wallet_balance() returns the current value.
     if is_live:
+        executor.sync_balance()
         wallet_balance = executor.get_wallet_balance()
         if wallet_balance > 0:
             portfolio = wallet_balance
