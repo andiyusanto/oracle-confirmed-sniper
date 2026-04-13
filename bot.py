@@ -151,10 +151,11 @@ async def run(is_live: bool, portfolio: float):
 
     # Pending redemption queue: timestamp when a WIN was detected.
     # Polymarket Data API takes 1–3 min after resolution to list positions
-    # as redeemable, so we retry every 90s until count > 0.
-    _redeem_pending_ts: float = 0.0   # 0 = no pending redemption
-    _REDEEM_RETRY_INTERVAL = 90.0     # seconds between retry attempts
-    _REDEEM_MAX_WAIT = 600.0          # give up after 10 minutes
+    # as redeemable, so we retry every 90s until actual USDC.e is received.
+    _redeem_pending_ts: float = 0.0       # 0 = no pending redemption
+    _last_redeem_attempt_ts: float = 0.0  # last time we called redeem_all
+    _REDEEM_RETRY_INTERVAL = 90.0         # seconds between retry attempts
+    _REDEEM_MAX_WAIT = 600.0              # give up after 10 minutes
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
@@ -177,29 +178,40 @@ async def run(is_live: bool, portfolio: float):
                             _redeem_pending_ts = now
                             log.info("WIN detected — redemption queued")
 
-                # Retry redemption every 90s while pending
+                # Retry redemption while pending — attempt immediately, then
+                # every 90s. Only clears when real USDC.e is confirmed received.
                 if is_live and _redeem_pending_ts > 0:
                     waited = now - _redeem_pending_ts
-                    should_try = (
-                        waited < _REDEEM_MAX_WAIT and
-                        (now - _redeem_pending_ts) % _REDEEM_RETRY_INTERVAL < CFG.poll_interval * 2
-                    )
+                    since_last = now - _last_redeem_attempt_ts
                     if waited >= _REDEEM_MAX_WAIT:
                         log.warning("Redemption gave up after %.0fs — run redeem_now.py manually", waited)
                         _redeem_pending_ts = 0.0
-                    elif should_try:
+                        _last_redeem_attempt_ts = 0.0
+                    elif since_last >= _REDEEM_RETRY_INTERVAL:
+                        _last_redeem_attempt_ts = now
                         count, total_usdc = await redeem.redeem_all_async()
                         if count > 0:
-                            log.info("Auto-redeemed %d position(s) ($%.2f USDC.e) to wallet",
-                                     count, total_usdc)
+                            # Sync CLOB ledger whenever redemption txs ran
                             executor.sync_balance()
+                        if total_usdc > 0:
+                            log.info("Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
+                                     count, total_usdc)
                             await telegram.notify_redeemed(count, total_usdc)
-                            _redeem_pending_ts = 0.0   # done
+                            _redeem_pending_ts = 0.0       # confirmed — done
+                            _last_redeem_attempt_ts = 0.0
+                        elif count > 0:
+                            log.info("Redeem txs sent (%d) but no USDC.e Transfer yet — retrying in %.0fs",
+                                     count, _REDEEM_RETRY_INTERVAL)
+                        else:
+                            log.info("No redeemable positions yet (waited %.0fs) — retrying in %.0fs",
+                                     waited, _REDEEM_RETRY_INTERVAL)
 
                 # Risk check
                 can_trade, reason = risk.can_trade()
                 if not can_trade:
                     if risk.kill_switch and reason.startswith("kill switch"):
+                        # Priority 2: cancel open CLOB orders before halting
+                        executor.cancel_all_orders()
                         await telegram.notify_kill_switch(
                             reason, db.daily_pnl(), risk.portfolio)
                     live.update(dash.render())

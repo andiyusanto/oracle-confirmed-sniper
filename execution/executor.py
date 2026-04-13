@@ -12,6 +12,7 @@ Fixes applied:
 import logging
 import time
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
 from core.config import CFG
@@ -75,6 +76,21 @@ class Executor:
         except Exception as e:
             log.error("Failed to init CLOB client: %s", e)
             self._clob = None
+
+    def cancel_all_orders(self) -> bool:
+        """Cancel all open CLOB orders. Called on kill switch activation.
+
+        Prevents orphaned limit orders from filling after the bot halts.
+        """
+        if not self._clob:
+            return False
+        try:
+            resp = self._clob.cancel_all()
+            log.warning("KILL SWITCH: all open CLOB orders cancelled — %s", resp)
+            return True
+        except Exception as e:
+            log.error("Failed to cancel all CLOB orders: %s", e)
+            return False
 
     def sync_balance(self) -> bool:
         """Tell Polymarket CLOB to resync its ledger from the on-chain balance.
@@ -248,8 +264,16 @@ class Executor:
             # Step 3: Get tick size
             tick_size = self._clob.get_tick_size(signal.token.token_id)
 
-            # Step 4: Place aggressive limit order at best ask
-            shares = round(signal.size_usdc / best_ask, 2)
+            # Step 4: Precision-safe price + size (Decimal, ROUND_DOWN)
+            # Prevents float artifacts like 4.9999... rounding to 4.99 < min_shares
+            price_d  = float(
+                Decimal(str(best_ask)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            )
+            shares   = float(
+                Decimal(str(signal.size_usdc / best_ask)).quantize(
+                    Decimal("0.01"), rounding=ROUND_DOWN
+                )
+            )
             if shares < CFG.min_shares:
                 log.warning("LIVE SKIP: %.2f shares < minimum %.0f (size=$%.2f @ $%.4f)",
                             shares, CFG.min_shares, signal.size_usdc, best_ask)
@@ -257,7 +281,7 @@ class Executor:
 
             order_args = OrderArgs(
                 token_id=signal.token.token_id,
-                price=best_ask,
+                price=price_d,
                 size=shares,
                 side="BUY",
                 fee_rate_bps=int(CFG.taker_fee_pct * 100)
@@ -279,12 +303,16 @@ class Executor:
                 order_id = resp.orderID
 
             if order_id:
-                trade.entry_price = best_ask
-                trade.size_usdc = round(shares * best_ask, 2)
+                trade.entry_price = price_d
+                trade.size_usdc   = float(
+                    Decimal(str(shares * price_d)).quantize(
+                        Decimal("0.01"), rounding=ROUND_DOWN
+                    )
+                )
                 log.info("LIVE FILLED: %s %s %s @ $%.4f size=$%.2f "
                          "shares=%.2f order=%s",
                          trade.asset, trade.direction, trade.side,
-                         best_ask, trade.size_usdc, shares, order_id)
+                         price_d, trade.size_usdc, shares, order_id)
                 return True
             else:
                 log.warning("LIVE ORDER no fill: %s", resp)

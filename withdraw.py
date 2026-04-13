@@ -26,8 +26,9 @@ POLYGON_RPCS = [
     "https://polygon-rpc.com",
 ]
 
-USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
-DECIMALS = 6
+USDC_E        = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+_NULL_ADDRESS = Web3.to_checksum_address("0x0000000000000000000000000000000000000000")
+DECIMALS      = 6
 
 ERC20_ABI = [
     {
@@ -112,6 +113,10 @@ def main():
         destination = Web3.to_checksum_address(dest_raw)
     except Exception:
         print("  ❌  Invalid address.")
+        sys.exit(1)
+
+    if destination == _NULL_ADDRESS:
+        print("  ❌  Zero address blocked — cannot withdraw to null address.")
         sys.exit(1)
 
     # ── Ask amount ────────────────────────────────────────────────────

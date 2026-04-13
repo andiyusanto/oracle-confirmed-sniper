@@ -36,6 +36,11 @@ class PriceFeeds:
         # Stores (timestamp, price) tuples, rolling 10-minute buffer
         self._price_history: dict[str, list[tuple[float, float]]] = {}
 
+        # Priority 5: silent-freeze watchdog timestamps
+        self._rtds_last_msg_ts:    float = 0.0
+        self._binance_last_msg_ts: float = 0.0
+        _WS_SILENCE_TIMEOUT = 30  # seconds — force reconnect if no message
+
         for a in CFG.assets:
             self.chainlink[a] = 0.0
             self.binance[a] = 0.0
@@ -192,10 +197,13 @@ class PriceFeeds:
         """Seconds since last Chainlink update."""
         return time.time() - self.cl_ts.get(asset, 0)
 
+    _WS_SILENCE_TIMEOUT = 30  # seconds without a message → force reconnect
+
     async def run_rtds(self):
         """Connect to Polymarket RTDS for Chainlink + Binance prices.
 
-        Uses proper WebSocket ping_interval instead of manual text PING.
+        Priority 5: uses asyncio.wait_for on each recv() so a silent
+        connection (no exception but no data) is detected and reconnected.
         """
         self._running = True
         while self._running:
@@ -207,6 +215,7 @@ class PriceFeeds:
                     close_timeout=5,
                 ) as ws:
                     log.info("RTDS connected: %s", CFG.rtds_url)
+                    self._rtds_last_msg_ts = time.time()
                     rtds_filters = ",".join(
                         a.lower() + "usdt" for a in CFG.assets
                     )
@@ -220,10 +229,19 @@ class PriceFeeds:
                              "filters": rtds_filters},
                         ]
                     }))
-                    async for raw in ws:
-                        if not self._running:
-                            break
-                        self._parse_rtds(raw)
+                    while self._running:
+                        try:
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=self._WS_SILENCE_TIMEOUT
+                            )
+                            self._rtds_last_msg_ts = time.time()
+                            self._parse_rtds(raw)
+                        except asyncio.TimeoutError:
+                            log.warning(
+                                "RTDS: no message in %ds — reconnecting",
+                                self._WS_SILENCE_TIMEOUT,
+                            )
+                            break  # exits inner while, triggers reconnect
             except Exception as e:
                 if self._running:
                     self._rtds_reconnects += 1
@@ -232,7 +250,10 @@ class PriceFeeds:
                     await asyncio.sleep(3)
 
     async def run_binance(self):
-        """Direct Binance WebSocket as backup/cross-check."""
+        """Direct Binance WebSocket as backup/cross-check.
+
+        Priority 5: asyncio.wait_for detects silent freeze and forces reconnect.
+        """
         symbols = "/".join(a.lower() + "usdt@bookTicker" for a in CFG.assets)
         while self._running:
             try:
@@ -241,10 +262,20 @@ class PriceFeeds:
                     url, ping_interval=20, ping_timeout=10
                 ) as ws:
                     log.info("Binance WS connected")
-                    async for raw in ws:
-                        if not self._running:
+                    self._binance_last_msg_ts = time.time()
+                    while self._running:
+                        try:
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=self._WS_SILENCE_TIMEOUT
+                            )
+                            self._binance_last_msg_ts = time.time()
+                            self._parse_binance(raw)
+                        except asyncio.TimeoutError:
+                            log.warning(
+                                "Binance WS: no message in %ds — reconnecting",
+                                self._WS_SILENCE_TIMEOUT,
+                            )
                             break
-                        self._parse_binance(raw)
             except Exception as e:
                 if self._running:
                     self._binance_reconnects += 1
