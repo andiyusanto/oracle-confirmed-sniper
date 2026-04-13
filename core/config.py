@@ -100,7 +100,7 @@ class Config:
     # deducts the fee instead of adding a phantom rebate.
     use_maker: bool = False
     maker_rebate_pct: float = 0.20   # unused while use_maker=False
-    taker_fee_pct: float = 2.50      # observed: ~2.52% token deduction
+    taker_fee_pct: float = 10.0      # market requires 1000 bps (10%) fee rate
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])

@@ -92,9 +92,12 @@ class HybridEngine:
         fair_value = self._fair_value(delta, ttl)
         edge_pct = (fair_value - price) * 100
 
-        # Minimum edge scales with risk: cheap tokens need more edge
-        # $0.55 entry → need 3% edge; $0.90 → need 1% edge
-        min_edge = max(0.5, 3.0 - price * 2.8)
+        # Minimum edge must exceed break-even given the 10% taker fee.
+        # Break-even: fair_value = price / (1 - fee), so
+        #   min_edge = price * fee / (1 - fee) * 100 + 1.0 (safety buffer)
+        # Floor of fee*50 (5.0%) covers very cheap tokens.
+        _fee = CFG.taker_fee_pct / 100
+        min_edge = max(_fee * 50, price * _fee / (1 - _fee) * 100 + 1.0)
         if edge_pct < min_edge:
             return None
 
@@ -127,14 +130,14 @@ class HybridEngine:
         # Delta alone is misleading — a 0.36% delta with 0.6% edge and
         # conf=79 is not EXTREME. Tier reflects actual trade quality.
         if (abs_delta >= CFG.extreme_delta_pct
-                and edge_pct >= 2.0 and confidence >= 80):
+                and edge_pct >= 15.0 and confidence >= 80):
             tier = "EXTREME"
         elif (abs_delta >= CFG.extreme_delta_pct
-              or (abs_delta >= CFG.strong_delta_pct and edge_pct >= 1.5
+              or (abs_delta >= CFG.strong_delta_pct and edge_pct >= 12.0
                   and confidence >= 65)):
             tier = "STRONG"
         elif (abs_delta >= CFG.strong_delta_pct
-              or (abs_delta >= CFG.min_delta_pct and edge_pct >= 1.0)):
+              or (abs_delta >= CFG.min_delta_pct and edge_pct >= 10.0)):
             tier = "MEDIUM"
         else:
             tier = "WEAK"
