@@ -28,6 +28,7 @@ class PriceFeeds:
         self.cl_ts: dict[str, float] = {}      # last Chainlink update time
         self.bn_ts: dict[str, float] = {}       # last Binance update time
         self.openings: dict[str, dict[int, float]] = {}  # {asset: {window_ts: price}}
+        self._skipped_windows: set[tuple[str, int]] = set()  # (asset, window_ts) permanently skipped
         self._running = False
         self._rtds_reconnects = 0
         self._binance_reconnects = 0
@@ -68,6 +69,8 @@ class PriceFeeds:
         """
         if window_ts in self.openings.get(asset, {}):
             return
+        if (asset, window_ts) in self._skipped_windows:
+            return
 
         price = self._interpolate_price_at(asset, float(window_ts))
 
@@ -82,6 +85,7 @@ class PriceFeeds:
             # price as opening produces delta≈0 and corrupts signal quality.
             elapsed_in_window = time.time() - window_ts
             if elapsed_in_window > 60:
+                self._skipped_windows.add((asset, window_ts))
                 log.warning("OPEN %s skipped (window %d, %.0fs elapsed — "
                             "opening unknowable after reconnect)",
                             asset, window_ts, elapsed_in_window)
