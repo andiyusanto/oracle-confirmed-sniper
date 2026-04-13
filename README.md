@@ -559,7 +559,10 @@ tmux kill-session -t bot       # stop everything
 |---|---|---|
 | `max_position_pct` | 3% | Max position as % of portfolio |
 | `max_position_usdc` | $30 | Hard cap per trade |
-| `live_max_usdc` | $10 | Safety cap in live mode |
+| `live_max_usdc` | $15 | Safety cap in live mode |
+| `min_shares` | 5 | Polymarket minimum order size (shares) |
+
+> `live_max_usdc` must be high enough that the computed size always produces ≥ `min_shares`. At the worst-case price of $0.95, 5 shares costs $4.75 — so any value above $5 is safe. $15 gives comfortable headroom across all price tiers.
 
 Size is scaled by entry price tier:
 - **$0.55–0.70** → 0.5× (higher risk, lower reward)
@@ -590,7 +593,7 @@ BTC, ETH and SOL on both 5-minute and 15-minute Polymarket prediction markets. C
 
 ## Performance Projections
 
-All projections assume the current config (`live_max_usdc = $10`, `max_position_usdc = $30`, maker rebate enabled, `require_binance_agrees = True`) with a $75 portfolio on BTC + ETH + SOL across 5-minute and 15-minute markets.
+All projections assume the current config (`live_max_usdc = $15`, `max_position_usdc = $30`, maker rebate enabled, `require_binance_agrees = True`) with a $75 portfolio on BTC + ETH + SOL across 5-minute and 15-minute markets.
 
 ### Trade Count
 
@@ -632,33 +635,33 @@ The dual-source gate (`require_binance_agrees`) skews the trade mix toward stron
 
 ### P&L
 
-**Per-trade math** (at avg entry $0.75, size $6.00, maker rebate):
+**Per-trade math** (at avg entry $0.75, size $8.00, maker rebate):
 
 | Outcome | Calculation | Result |
 |---|---|---|
-| Win | `($6 / $0.75) × (1 - $0.75) + $6 × 0.20%` | +$2.01 |
-| Loss | `-$6.00 + $6 × 0.20%` | -$5.99 |
-| Breakeven WR | `5.99 / (5.99 + 2.01)` | **~75%** |
+| Win | `($8 / $0.75) × (1 - $0.75) + $8 × 0.20%` | +$2.68 |
+| Loss | `-$8.00 + $8 × 0.20%` | -$7.98 |
+| Breakeven WR | `7.98 / (7.98 + 2.68)` | **~75%** |
 
 > Breakeven is ~75% — this strategy only profits when win rate consistently exceeds that. The dual-source confirmation and extreme-delta filtering are what push WR above the break-even line.
 
-**Daily P&L scenarios** (100 trades/day, $6 avg size):
+**Daily P&L scenarios** (100 trades/day, $8 avg size):
 
 | Win Rate | Wins | Losses | Gross P&L | Notes |
 |---|---|---|---|---|
-| 65% | 65 | 35 | -$5.35 | Below breakeven |
-| 72% | 72 | 28 | +$42.00 | Marginal positive |
-| 78% | 78 | 22 | +$27.50/day | Target range |
-| 85% | 85 | 15 | +$80.00/day | High-conviction session |
+| 65% | 65 | 35 | -$7.10 | Below breakeven |
+| 72% | 72 | 28 | +$55.00 | Marginal positive |
+| 78% | 78 | 22 | +$36.60/day | Target range |
+| 85% | 85 | 15 | +$106.00/day | High-conviction session |
 
 **Monthly projection at 78% WR, 100 trades/day:**
 
 | Metric | Value |
 |---|---|
 | Monthly trades | ~3,000 |
-| Expected P&L | +$825–$2,400 |
+| Expected P&L | +$1,100–$3,180 |
 | Max drawdown risk | $75 × 15% = $11.25 kill switch |
-| Portfolio growth (78% WR) | +35–80% / month |
+| Portfolio growth (78% WR) | +45–100% / month |
 
 ### Key Risks to Projections
 
