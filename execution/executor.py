@@ -439,14 +439,18 @@ class Executor:
         shares = trade.size_usdc / trade.entry_price
 
         if outcome_won:
+            # Gross profit on tokens at face value ($1.00 each)
             pnl = shares * (1.0 - trade.entry_price)
+            # Polymarket deducts taker fee from token quantity received,
+            # not from USDC. Fee is on the face value of tokens ordered:
+            #   actual_received = shares * (1 - fee_rate)
+            #   lost_to_fee     = shares * fee_rate * $1.00
+            # Observed: 5.12 shares ordered → 4.991 received (2.52% deducted)
+            pnl -= shares * CFG.taker_fee_pct / 100
         else:
+            # Loss = exactly what you paid. Fee was deducted from tokens at
+            # purchase, but losing tokens are worth $0 anyway — no extra
+            # deduction needed on top of the cost basis.
             pnl = -trade.size_usdc
-
-        # Fees apply regardless of outcome
-        if CFG.use_maker:
-            pnl += trade.size_usdc * CFG.maker_rebate_pct / 100
-        else:
-            pnl -= trade.size_usdc * CFG.taker_fee_pct / 100
 
         return round(pnl, 6)

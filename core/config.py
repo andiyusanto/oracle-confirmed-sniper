@@ -94,9 +94,13 @@ class Config:
     max_daily_loss_pct: float = 10.0
 
     # ── Fee structure ───────────────────────────────────────────────
-    use_maker: bool = True
-    maker_rebate_pct: float = 0.20
-    taker_fee_pct: float = 1.80
+    # Orders are placed at best_ask → immediate match → taker in practice.
+    # Observed: 5.12 shares ordered, 4.991 received → 2.52% fee deducted
+    # from token quantity at fill time. use_maker=False ensures _compute_pnl
+    # deducts the fee instead of adding a phantom rebate.
+    use_maker: bool = False
+    maker_rebate_pct: float = 0.20   # unused while use_maker=False
+    taker_fee_pct: float = 2.50      # observed: ~2.52% token deduction
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
