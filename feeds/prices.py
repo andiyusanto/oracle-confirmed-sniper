@@ -39,7 +39,7 @@ class PriceFeeds:
         # Priority 5: silent-freeze watchdog timestamps
         self._rtds_last_msg_ts:    float = 0.0
         self._binance_last_msg_ts: float = 0.0
-        _WS_SILENCE_TIMEOUT = 30  # seconds — force reconnect if no message
+        _WS_SILENCE_TIMEOUT = 60  # seconds — RTDS goes quiet during low volatility
 
         for a in CFG.assets:
             self.chainlink[a] = 0.0
@@ -77,7 +77,15 @@ class PriceFeeds:
             log.info("OPEN %s $%.2f (window %d, src=%s)",
                      asset, price, window_ts, source)
         else:
-            # Last resort: use current price (less accurate)
+            # Last resort: use current price only if we just joined the window.
+            # If we're >60s in, the true opening is unknowable — setting current
+            # price as opening produces delta≈0 and corrupts signal quality.
+            elapsed_in_window = time.time() - window_ts
+            if elapsed_in_window > 60:
+                log.warning("OPEN %s skipped (window %d, %.0fs elapsed — "
+                            "opening unknowable after reconnect)",
+                            asset, window_ts, elapsed_in_window)
+                return
             current = self.best_price(asset)
             if current > 0:
                 self.openings[asset][window_ts] = current
@@ -197,7 +205,7 @@ class PriceFeeds:
         """Seconds since last Chainlink update."""
         return time.time() - self.cl_ts.get(asset, 0)
 
-    _WS_SILENCE_TIMEOUT = 30  # seconds without a message → force reconnect
+    _WS_SILENCE_TIMEOUT = 60  # seconds without a message → force reconnect
 
     async def run_rtds(self):
         """Connect to Polymarket RTDS for Chainlink + Binance prices.

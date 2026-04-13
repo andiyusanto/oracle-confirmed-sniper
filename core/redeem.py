@@ -369,6 +369,9 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
         return False, 0.0
 
 
+_redeemed_cids: set[str] = set()   # session-level guard against double-redemption
+
+
 def redeem_all() -> tuple[int, float]:
     """Redeem all resolved positions. Returns (count_redeemed, total_usdc_received)."""
     if not CFG.private_key:
@@ -379,6 +382,16 @@ def redeem_all() -> tuple[int, float]:
     wallet = _guard_address(CFG.funder_address, "redeem_all")
 
     positions = _fetch_redeemable_positions()
+    if not positions:
+        log.info("No positions to redeem")
+        return 0, 0.0
+
+    # Filter positions already redeemed this session — Data API can lag
+    # and return the same position again before on-chain state propagates.
+    positions = [
+        p for p in positions
+        if p.get("conditionId", p.get("condition_id", "")) not in _redeemed_cids
+    ]
     if not positions:
         log.info("No positions to redeem")
         return 0, 0.0
@@ -401,6 +414,9 @@ def redeem_all() -> tuple[int, float]:
         if ok:
             redeemed   += 1
             total_usdc += usdc_received
+            cid = pos.get("conditionId", pos.get("condition_id", ""))
+            if cid:
+                _redeemed_cids.add(cid)
         # Always advance nonce — even skipped/failed positions consume the slot
         # if a tx reached the mempool before the error.
         nonce += 1

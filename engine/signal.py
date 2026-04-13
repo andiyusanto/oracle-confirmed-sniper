@@ -21,9 +21,15 @@ log = logging.getLogger("hybrid.engine")
 
 
 class HybridEngine:
+    # Seconds to block an asset after any fill, regardless of window_ts.
+    # Prevents double-fills when a 5m and 15m market share the same end_ts
+    # and are simultaneously in their entry windows.
+    ASSET_FILL_COOLDOWN = 10.0
+
     def __init__(self, feeds: PriceFeeds):
         self.feeds = feeds
         self._traded_windows: set[str] = set()
+        self._asset_fill_ts: dict[str, float] = {}   # asset → last fill timestamp
 
     def evaluate(self, token: Token, portfolio: float,
                  is_live: bool = False) -> Optional[Signal]:
@@ -35,6 +41,13 @@ class HybridEngine:
         # ── GATE 1: Not already traded this window ────────────────
         wkey = f"{asset}_{token.window_ts}"
         if wkey in self._traded_windows:
+            return None
+
+        # ── GATE 1b: Per-asset cooldown after any fill ────────────
+        # Blocks 5m+15m double-fills when both windows share the same
+        # end_ts and are simultaneously in their entry window.
+        last_fill = self._asset_fill_ts.get(asset, 0.0)
+        if now - last_fill < self.ASSET_FILL_COOLDOWN:
             return None
 
         # ── GATE 2: Capture opening price ─────────────────────────
@@ -149,8 +162,9 @@ class HybridEngine:
 
     def mark_traded(self, asset: str, window_ts: int):
         """Mark a window as traded (prevent duplicates)."""
-        self._traded_windows.add(f"{asset}_{window_ts}")
         now = time.time()
+        self._traded_windows.add(f"{asset}_{window_ts}")
+        self._asset_fill_ts[asset] = now
         self._traded_windows = {
             w for w in self._traded_windows
             if int(w.split("_")[1]) + 600 > now
