@@ -22,10 +22,11 @@ log = logging.getLogger("hybrid.redeem")
 
 # ── Polygon RPCs ──────────────────────────────────────────────────────
 POLYGON_RPCS = [
-    "https://polygon-rpc.com",
-    "https://rpc-mainnet.matic.quiknode.pro",
-    "https://polygon-mainnet.public.blastapi.io",
     "https://rpc.ankr.com/polygon",
+    "https://polygon-mainnet.public.blastapi.io",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://rpc-mainnet.matic.quiknode.pro",
+    "https://polygon-rpc.com",
 ]
 
 # ── Contract addresses (Polygon) ──────────────────────────────────────
@@ -162,11 +163,11 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int, gas_price: int) ->
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
         if receipt.status == 1:
-            log.info("REDEEMED: %s | tx: %s (block %d)",
+            log.info("REDEEMED: %s | tx: 0x%s (block %d)",
                      market, tx_hash.hex(), receipt.blockNumber)
             return True
         else:
-            log.error("Redeem REVERTED: %s | tx: %s", market, tx_hash.hex())
+            log.error("Redeem REVERTED: %s | tx: 0x%s", market, tx_hash.hex())
             return False
 
     except Exception as e:

@@ -221,7 +221,16 @@ class Executor:
 
             best_ask = asks[0]
 
-            # Step 2: Check if the real price is still tradeable
+            # Step 2: Sanity-check the live price against expected range.
+            # Below min_token_price → near-worthless token, likely wrong
+            # token_id or severely stale book cache — do not buy.
+            if best_ask < CFG.min_token_price:
+                log.warning("LIVE SKIP: best ask $%.4f < min $%.2f "
+                            "(possible wrong token or stale cache) for %s %s",
+                            best_ask, CFG.min_token_price,
+                            signal.token.asset, signal.token.direction)
+                return False
+
             if best_ask > CFG.max_token_price:
                 log.warning("LIVE SKIP: best ask $%.4f > max $%.2f "
                             "(book already priced in) for %s %s",

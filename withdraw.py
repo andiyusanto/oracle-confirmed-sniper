@@ -19,11 +19,11 @@ from web3 import Web3
 
 # ── Polygon contracts ─────────────────────────────────────────────────
 POLYGON_RPCS = [
-    "https://polygon-rpc.com",
-    "https://rpc-mainnet.matic.quiknode.pro",
-    "https://polygon-mainnet.public.blastapi.io",
-    "https://matic-mainnet.chainstacklabs.com",
     "https://rpc.ankr.com/polygon",
+    "https://polygon-mainnet.public.blastapi.io",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://rpc-mainnet.matic.quiknode.pro",
+    "https://polygon-rpc.com",
 ]
 
 USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
