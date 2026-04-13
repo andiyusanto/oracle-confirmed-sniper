@@ -65,13 +65,9 @@ class HybridEngine:
         if oracle_says != token.direction:
             return None
 
-        # ── GATE 5b: Binance must agree with Chainlink direction ──
-        if CFG.require_binance_agrees:
-            if not self.feeds.binance_agrees(asset, oracle_says,
-                                             token.window_ts):
-                log.debug("SKIP %s %s: Binance disagrees with Chainlink",
-                          asset, oracle_says)
-                return None
+        # ── GATE 5b: Binance agreement check ─────────────────────
+        binance_agrees = self.feeds.binance_agrees(asset, oracle_says,
+                                                   token.window_ts)
 
         # ── GATE 6: Token price in range ──────────────────────────
         price = token.book_price
@@ -79,7 +75,8 @@ class HybridEngine:
             return None
 
         # ── GATE 7: Confidence scoring (adaptive threshold) ──────
-        confidence = self._score(delta, ttl, price, asset)
+        confidence = self._score(delta, ttl, price, asset,
+                                 binance_agrees=binance_agrees)
 
         # Strong deltas get a lower confidence threshold
         threshold = (CFG.min_confidence_strong
@@ -114,8 +111,7 @@ class HybridEngine:
             opening_price=opening,
             current_price=self.feeds.best_price(asset),
             delta_pct=delta, oracle_says=oracle_says,
-            binance_agrees=self.feeds.binance_agrees(asset, oracle_says,
-                                                     token.window_ts),
+            binance_agrees=binance_agrees,
             last_update=time.time(),
         )
 
@@ -161,14 +157,15 @@ class HybridEngine:
         }
 
     def _score(self, delta: float, ttl: float, price: float,
-               asset: str) -> float:
+               asset: str, binance_agrees: bool = True) -> float:
         """Combined confidence score (0-100).
 
         Components:
-          delta_score    (0-40): oracle move magnitude
-          time_score     (0-30): less time = more certain
-          price_score    (0-20): market agreement
-          freshness_score (0-10): Chainlink data freshness
+          delta_score      (0-40): oracle move magnitude
+          time_score       (0-30): less time = more certain
+          price_score      (0-20): market agreement
+          freshness_score  (0-5):  Chainlink data freshness
+          binance_score    (0-5):  Binance confirms direction (+5) or disagrees (-5)
         """
         abs_d = abs(delta)
 
@@ -208,15 +205,18 @@ class HybridEngine:
         # Chainlink freshness score
         stale = self.feeds.chainlink_staleness(asset)
         if stale < 5:
-            ss = 10.0
+            ss = 5.0
         elif stale < 15:
-            ss = 7.0
-        elif stale < 30:
             ss = 3.0
+        elif stale < 30:
+            ss = 1.0
         else:
             ss = 0.0
 
-        return min(100.0, ds + ts + ps + ss)
+        # Binance agreement: +5 if agrees, -5 if disagrees (soft signal, not a block)
+        bs = 5.0 if binance_agrees else -5.0
+
+        return min(100.0, ds + ts + ps + ss + bs)
 
     def _fair_value(self, delta: float, ttl: float) -> float:
         """Estimate true probability of this outcome winning.

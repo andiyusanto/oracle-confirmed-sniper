@@ -51,7 +51,7 @@ class Config:
     snipe_exit_sec: float = 3.0         # stop at T-3s (need fill time)
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
-    min_delta_pct: float = 0.020        # raised from 0.015 — filters noise
+    min_delta_pct: float = 0.015        # lowered: edge gate is the real filter now
     strong_delta_pct: float = 0.050     # unchanged
     extreme_delta_pct: float = 0.100    # unchanged
 
