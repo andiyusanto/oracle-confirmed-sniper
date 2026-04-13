@@ -62,3 +62,4 @@ class Trade:
     binance_price: float = 0.0
     chainlink_price: float = 0.0
     opening_price: float = 0.0
+    duration_sec: int = 300       # market window length (5m=300, 15m=900)

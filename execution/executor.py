@@ -187,6 +187,8 @@ class Executor:
             binance_price=self.feeds.binance.get(signal.token.asset, 0),
             chainlink_price=self.feeds.chainlink.get(signal.token.asset, 0),
             opening_price=signal.oracle.opening_price,
+            # Bug 1 fix: store actual window length (5m=300, 15m=900)
+            duration_sec=int(signal.token.end_ts - signal.token.window_ts),
         )
 
         if self.is_live:
@@ -371,7 +373,9 @@ class Executor:
         to_close = []
 
         for wkey, trade in list(self.open_positions.items()):
-            dur_sec = 300
+            # Bug 1 fix: use stored duration (5m=300, 15m=900).
+            # getattr fallback handles trades opened before this field existed.
+            dur_sec    = getattr(trade, 'duration_sec', 300)
             window_end = trade.window_ts + dur_sec
 
             # Phase 1: snapshot final delta in last 5s

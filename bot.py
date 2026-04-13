@@ -145,17 +145,34 @@ async def run(is_live: bool, portfolio: float):
     # Initial market discovery
     await markets.discover()
 
+    # Bug 2 fix: startup redemption scan — catches any positions that won
+    # while the bot was offline (crash, restart, manual stop).
+    if is_live:
+        log.info("Startup: scanning for unredeemed winning positions...")
+        _s_count, _s_usdc = await redeem.redeem_all_async()
+        if _s_usdc > 0:
+            executor.sync_balance()
+            await telegram.notify_redeemed(_s_count, _s_usdc)
+            log.info("Startup redemption: %d position(s) $%.4f USDC.e", _s_count, _s_usdc)
+        elif _s_count > 0:
+            executor.sync_balance()
+
     # Telegram: bot started
     mode_str = "LIVE" if is_live else "PAPER"
     await telegram.notify_bot_start(mode_str, portfolio)
 
     # Pending redemption queue: timestamp when a WIN was detected.
-    # Polymarket Data API takes 1–3 min after resolution to list positions
+    # Polymarket Data API takes 1–15 min after resolution to list positions
     # as redeemable, so we retry every 90s until actual USDC.e is received.
     _redeem_pending_ts: float = 0.0       # 0 = no pending redemption
     _last_redeem_attempt_ts: float = 0.0  # last time we called redeem_all
     _REDEEM_RETRY_INTERVAL = 90.0         # seconds between retry attempts
-    _REDEEM_MAX_WAIT = 600.0              # give up after 10 minutes
+    _REDEEM_MAX_WAIT = 1200.0             # Bug 5 fix: give up after 20 min
+
+    # Bug 2+3+4 fix: periodic scan catches orphaned wins regardless of
+    # bot-computed PnL or whether a new win triggers the queue.
+    _PERIODIC_REDEEM_INTERVAL = 900.0     # scan every 15 min unconditionally
+    _last_periodic_redeem_ts: float = 0.0
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
@@ -191,8 +208,9 @@ async def run(is_live: bool, portfolio: float):
                         _last_redeem_attempt_ts = now
                         count, total_usdc = await redeem.redeem_all_async()
                         if count > 0:
-                            # Sync CLOB ledger whenever redemption txs ran
-                            executor.sync_balance()
+                            # Bug 6 fix: sync_balance is blocking HTTP — run in executor
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, executor.sync_balance)
                         if total_usdc > 0:
                             log.info("Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
                                      count, total_usdc)
@@ -205,6 +223,26 @@ async def run(is_live: bool, portfolio: float):
                         else:
                             log.info("No redeemable positions yet (waited %.0fs) — retrying in %.0fs",
                                      waited, _REDEEM_RETRY_INTERVAL)
+
+                # Bug 2+3+4 fix: periodic scan every 15 min — catches orphaned
+                # wins regardless of bot-computed PnL or queue state.
+                # Covers: bot restart after win, oracle miscalculation, second
+                # win that became redeemable after the queue already cleared.
+                if is_live and (now - _last_periodic_redeem_ts) >= _PERIODIC_REDEEM_INTERVAL:
+                    _last_periodic_redeem_ts = now
+                    p_count, p_usdc = await redeem.redeem_all_async()
+                    if p_usdc > 0:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, executor.sync_balance)
+                        log.info("Periodic redeem: %d position(s) $%.4f USDC.e",
+                                 p_count, p_usdc)
+                        await telegram.notify_redeemed(p_count, p_usdc)
+                        # Also clear the win queue if it was pending
+                        _redeem_pending_ts = 0.0
+                        _last_redeem_attempt_ts = 0.0
+                    elif p_count > 0:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, executor.sync_balance)
 
                 # Risk check
                 can_trade, reason = risk.can_trade()
