@@ -286,8 +286,6 @@ class Executor:
                 price=price_d,
                 size=shares,
                 side="BUY",
-                fee_rate_bps=int(CFG.taker_fee_pct * 100)
-                              if not CFG.use_maker else 0,
             )
 
             options = PartialCreateOrderOptions(
