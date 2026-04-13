@@ -101,6 +101,10 @@ async def run(is_live: bool, portfolio: float):
     log.info("  Price range: $%.2f - $%.2f", CFG.min_token_price, CFG.max_token_price)
     log.info("  Min delta: %.3f%%  Min confidence: %.0f", CFG.min_delta_pct, CFG.min_confidence)
     log.info("=" * 60)
+    if telegram.is_configured():
+        log.info("Telegram notifications: ENABLED")
+    else:
+        log.warning("Telegram notifications: DISABLED — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
 
     # Initialize components
     db = Database(CFG.db_path)
@@ -266,7 +270,7 @@ async def run(is_live: bool, portfolio: float):
                     continue
 
                 # Scan all tokens for snipe opportunities
-                for tid, token in list(markets.tokens.items()):
+                for _, token in list(markets.tokens.items()):
                     ttl = token.end_ts - now
 
                     # Quick pre-filter: only tokens in the time window
