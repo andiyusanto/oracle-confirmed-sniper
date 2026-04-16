@@ -294,11 +294,16 @@ class Executor:
                          shares, CFG.min_shares, signal.size_usdc, bumped, best_ask)
                 shares = CFG.min_shares
 
+            # fee_rate_bps must be non-zero for crossing (taker) orders.
+            # With fee_rate_bps=0 Polymarket treats the order as post-only;
+            # a post-only order that crosses the book is rejected with
+            # "crosses the book". Standard Polymarket taker fee = 200 bps (2%).
             order_args = OrderArgs(
                 token_id=signal.token.token_id,
                 price=price_d,
                 size=shares,
                 side="BUY",
+                fee_rate_bps=200,
             )
 
             options = PartialCreateOrderOptions(
