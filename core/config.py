@@ -51,7 +51,7 @@ class Config:
     snipe_exit_sec: float = 3.0         # stop at T-3s (need fill time)
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
-    min_delta_pct: float = 0.015        # lowered: edge gate is the real filter now
+    min_delta_pct: float = 0.025        # raised: 0.015 admitted too many marginal signals
     strong_delta_pct: float = 0.050     # unchanged
     extreme_delta_pct: float = 0.100    # unchanged
 
@@ -119,7 +119,7 @@ class Config:
     # ── Infrastructure ──────────────────────────────────────────────
     db_path: str = "hybrid_trades.db"
     log_dir: str = "logs"             # daily logs saved as logs/YYYY-MM-DD_hybrid.log
-    poll_interval: float = 0.8
+    poll_interval: float = 0.1
     discovery_interval: float = 30.0    # reduced from 45s — catch more windows
     book_cache_sec: float = 2.0
 

@@ -59,6 +59,34 @@ class HybridEngine:
         if abs_delta < CFG.min_delta_pct:
             return None
 
+        # ── GATE 3b: Delta momentum filter ───────────────────────────
+        # Compare current delta to where it was 20 seconds ago.
+        # Weak signals (< strong_delta_pct) that are fading or reversing
+        # are the primary source of losing trades — the oracle moved our
+        # way early, but the market is already snapping back by entry time.
+        # Skip if:
+        #   a) direction reversed in the last 20s, OR
+        #   b) delta lost >60% of its strength in the last 20s (fading fast)
+        # Strong/extreme deltas skip this filter — large moves can afford
+        # minor retracements and still resolve in our direction.
+        if abs_delta < CFG.strong_delta_pct:
+            past_delta = self.feeds.oracle_delta_at(asset, token.window_ts, 20.0)
+            if past_delta != 0.0 and abs(past_delta) >= CFG.min_delta_pct:
+                # a) Direction reversed
+                if (delta > 0) != (past_delta > 0):
+                    log.debug(
+                        "MOMENTUM SKIP %s: delta reversed (was %.4f%%, now %.4f%%)",
+                        asset, past_delta, delta,
+                    )
+                    return None
+                # b) More than 60% of strength lost
+                if abs_delta < abs(past_delta) * 0.40:
+                    log.debug(
+                        "MOMENTUM SKIP %s: delta fading (was %.4f%%, now %.4f%%)",
+                        asset, past_delta, delta,
+                    )
+                    return None
+
         # ── GATE 4: Tiered timing based on delta strength ─────────
         # Stronger delta = can enter earlier with confidence
         # Weak delta = wait longer for time confirmation

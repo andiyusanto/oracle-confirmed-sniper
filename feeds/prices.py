@@ -165,6 +165,25 @@ class PriceFeeds:
             return 0.0
         return (current - opening) / opening * 100
 
+    def oracle_delta_at(self, asset: str, window_ts: int,
+                        lookback_sec: float) -> float:
+        """Signed % delta at a past point vs the same window's opening price.
+
+        Used for momentum filtering: compare current delta to delta N seconds
+        ago to detect fading or reversing moves before committing capital.
+
+        Returns 0.0 if no history is available near that timestamp
+        (caller should treat 0.0 as 'unknown, skip momentum check').
+        """
+        opening = self.openings.get(asset, {}).get(window_ts, 0)
+        if opening <= 0:
+            return 0.0
+        target_ts = time.time() - lookback_sec
+        past_price = self._interpolate_price_at(asset, target_ts)
+        if past_price <= 0:
+            return 0.0
+        return (past_price - opening) / opening * 100
+
     def binance_agrees(self, asset: str, oracle_says: str,
                        window_ts: int = 0) -> bool:
         """Check if Binance price direction agrees with Chainlink oracle.
