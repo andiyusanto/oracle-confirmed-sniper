@@ -102,12 +102,14 @@ class HybridEngine:
         fair_value = self._fair_value(delta, ttl)
         edge_pct = (fair_value - price) * 100
 
-        # Minimum edge must exceed break-even given the 10% taker fee.
-        # Break-even: fair_value = price / (1 - fee), so
-        #   min_edge = price * fee / (1 - fee) * 100 + 1.0 (safety buffer)
-        # Floor of fee*50 (5.0%) covers very cheap tokens.
+        # Minimum edge must exceed break-even after taker fee, with an
+        # explicit absolute floor from config to guard against accidental
+        # loosening if taker_fee_pct is re-tuned.
+        # Break-even: fair_value = price / (1 - fee)
+        #   fee_edge  = price * fee / (1 - fee) * 100 + 1.0  (1% safety buffer)
         _fee = CFG.taker_fee_pct / 100
-        min_edge = max(_fee * 50, price * _fee / (1 - _fee) * 100 + 1.0)
+        fee_edge = price * _fee / (1 - _fee) * 100 + 1.0
+        min_edge = max(CFG.min_edge_pct, fee_edge)
         if edge_pct < min_edge:
             return None
 

@@ -14,9 +14,6 @@ Falls back silently if credentials are missing or sends fail.
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Optional
-
 import httpx
 
 from core.config import CFG
@@ -35,18 +32,17 @@ def is_configured() -> bool:
 
 
 async def send(text: str, parse_mode: str = "HTML",
-               disable_preview: bool = True) -> bool:
-    """Send a Telegram message. Returns True on success."""
+               disable_preview: bool = True,
+               _retries: int = 3) -> bool:
+    """Send a Telegram message. Returns True on success.
+
+    Retries up to _retries times on transient failures (network error,
+    5xx, timeout). Respects Retry-After on 429 rate-limit responses.
+    """
     global _last_send_ts
 
     if not is_configured():
         return False
-
-    # Rate limiting
-    now = time.time()
-    elapsed = now - _last_send_ts
-    if elapsed < _MIN_INTERVAL:
-        await asyncio.sleep(_MIN_INTERVAL - elapsed)
 
     url = f"https://api.telegram.org/bot{CFG.telegram_token}/sendMessage"
     payload = {
@@ -56,18 +52,50 @@ async def send(text: str, parse_mode: str = "HTML",
         "disable_web_page_preview": disable_preview,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json=payload)
+    for attempt in range(_retries):
+        # Rate limiting — honour minimum interval between sends
+        now = time.time()
+        elapsed = now - _last_send_ts
+        if elapsed < _MIN_INTERVAL:
+            await asyncio.sleep(_MIN_INTERVAL - elapsed)
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, json=payload)
             _last_send_ts = time.time()
+
             if resp.status_code == 200:
                 return True
-            else:
-                log.warning("Telegram send failed: %d %s",
-                            resp.status_code, resp.text[:200])
-                return False
+
+            if resp.status_code == 429:
+                # Telegram rate limit — back off by Retry-After header
+                retry_after = int(resp.headers.get("Retry-After", 5))
+                log.warning("Telegram rate limited — waiting %ds (attempt %d/%d)",
+                            retry_after, attempt + 1, _retries)
+                await asyncio.sleep(retry_after)
+                continue
+
+            log.warning("Telegram send failed: %d %s (attempt %d/%d)",
+                        resp.status_code, resp.text[:200], attempt + 1, _retries)
+
+        except Exception as e:
+            log.warning("Telegram send error (attempt %d/%d): %s",
+                        attempt + 1, _retries, e)
+
+        # Backoff before retry (skip delay on final attempt)
+        if attempt < _retries - 1:
+            await asyncio.sleep(2.0 * (attempt + 1))
+
+    return False
+
+
+def send_sync(text: str, parse_mode: str = "HTML",
+              disable_preview: bool = True) -> bool:
+    """Synchronous wrapper around send() for non-async callers (e.g. redeem_now.py)."""
+    try:
+        return asyncio.run(send(text, parse_mode, disable_preview))
     except Exception as e:
-        log.warning("Telegram send error: %s", e)
+        log.warning("Telegram sync send error: %s", e)
         return False
 
 
@@ -103,13 +131,17 @@ async def notify_trade_closed(trade) -> bool:
     won = trade.pnl > 0
     emoji = "✅" if won else "❌"
     tag = "WIN" if won else "LOSS"
+    fair = getattr(trade, "fair_value", None)
+    fair_line = f"Fair value: ${fair:.4f}\n" if fair else ""
     msg = (
         f"{emoji} <b>TRADE {tag}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Asset: <b>{trade.asset} {trade.direction}</b>\n"
-        f"Entry: ${trade.entry_price:.4f}\n"
+        f"Entry: ${trade.entry_price:.4f}  Size: ${trade.size_usdc:.2f}\n"
+        f"{fair_line}"
         f"P&L: <b>${trade.pnl:+.4f}</b>\n"
         f"Oracle Δ: {trade.oracle_delta:+.4f}%\n"
+        f"Mode: {trade.mode}\n"
         f"ID: <code>{trade.id}</code>"
     )
     return await send(msg)
@@ -157,6 +189,51 @@ async def notify_redeemed(count: int, total_usdc: float) -> bool:
         f"Returned: <b>${total_usdc:.2f} USDC.e</b>\n"
         f"✅ Back in wallet"
     )
+    return await send(msg)
+
+
+async def notify_manual_redeem_start(n_positions: int,
+                                     estimated_usdc: float) -> bool:
+    """Send alert when manual redemption is kicked off via redeem_now.py."""
+    msg = (
+        f"🔄 <b>MANUAL REDEMPTION STARTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Positions: <b>{n_positions}</b>\n"
+        f"Estimated: <b>~${estimated_usdc:.2f} USDC.e</b>\n"
+        f"⏳ Submitting on-chain transactions..."
+    )
+    return await send(msg)
+
+
+async def notify_redeem_result(attempted: int, redeemed: int,
+                               total_usdc: float) -> bool:
+    """Send the final outcome of a manual redemption run.
+
+    Covers three cases:
+      - All redeemed       → use notify_redeemed
+      - Partial (some blocked by oracle guard)
+      - Zero redeemed      (oracle not settled yet or RPC error)
+    """
+    if redeemed == attempted and total_usdc > 0:
+        return await notify_redeemed(redeemed, total_usdc)
+
+    if redeemed > 0 and total_usdc > 0:
+        msg = (
+            f"⚠️ <b>PARTIAL REDEMPTION</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Redeemed: <b>{redeemed}/{attempted}</b>\n"
+            f"Returned: <b>${total_usdc:.2f} USDC.e</b>\n"
+            f"Some positions blocked — oracle may not have settled yet.\n"
+            f"Run <code>python3 redeem_now.py</code> again in a few minutes."
+        )
+    else:
+        msg = (
+            f"⏸ <b>REDEMPTION BLOCKED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Attempted: <b>{attempted}</b> position(s)\n"
+            f"Oracle has not settled yet (payoutNumerators=0).\n"
+            f"Run <code>python3 redeem_now.py</code> again in ~3 minutes."
+        )
     return await send(msg)
 
 

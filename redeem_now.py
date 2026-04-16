@@ -8,9 +8,11 @@ Usage:
     python3 redeem_now.py
 """
 
+import asyncio
 import sys
 from core.redeem import redeem_all, _fetch_redeemable_positions
 from core.config import CFG
+from core import telegram
 
 SEPARATOR = "─" * 48
 
@@ -39,16 +41,16 @@ def main():
         sys.exit(0)
 
     print(f"  Found {len(positions)} position(s) to redeem:\n")
-    total_usdc = 0.0
+    estimated_total = 0.0
     for p in positions:
         market = p.get("title", p.get("conditionId", "")[:12])
         size   = float(p.get("size", 0))
         kind   = "neg-risk" if p.get("negativeRisk") else "standard"
-        total_usdc += size
+        estimated_total += size
         print(f"    · {market[:45]:<45}  ${size:.2f}  [{kind}]")
 
     print()
-    print(f"  Total : ${total_usdc:.2f} USDC.e")
+    print(f"  Total : ${estimated_total:.2f} USDC.e")
     print(SEPARATOR)
     print()
 
@@ -56,6 +58,11 @@ def main():
     if confirm not in ("yes", "y"):
         print("\n  Cancelled. Nothing was redeemed.\n")
         sys.exit(0)
+
+    # ── Notify: redemption starting ───────────────────────────────────
+    if telegram.is_configured():
+        asyncio.run(telegram.notify_manual_redeem_start(
+            len(positions), estimated_total))
 
     # ── Execute ───────────────────────────────────────────────────────
     print()
@@ -71,6 +78,11 @@ def main():
         print("  ❌  No positions were redeemed. Check logs for errors.")
     print(SEPARATOR)
     print()
+
+    # ── Notify: result ────────────────────────────────────────────────
+    if telegram.is_configured():
+        asyncio.run(telegram.notify_redeem_result(
+            len(positions), count, total_usdc))
 
 
 if __name__ == "__main__":

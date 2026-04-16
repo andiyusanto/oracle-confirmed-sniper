@@ -19,6 +19,28 @@ import aiohttp
 from core.config import CFG
 from core.models import Token
 
+# ── On-chain condition validator ──────────────────────────────────────
+# Used to check that a conditionId is actually registered on the CTF
+# contract before we commit capital to that market.
+# A conditionId with getOutcomeSlotCount == 0 was never deployed on-chain
+# and its oracle will never call reportPayouts → permanent zombie market.
+_CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+_CTF_SLOT_ABI = [
+    {
+        "name": "getOutcomeSlotCount",
+        "type": "function",
+        "inputs": [{"name": "conditionId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+    }
+]
+_POLYGON_RPCS = [
+    "https://rpc.ankr.com/polygon",
+    "https://polygon-mainnet.public.blastapi.io",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon-rpc.com",
+]
+
 log = logging.getLogger("hybrid.markets")
 
 try:
@@ -49,8 +71,74 @@ class MarketDiscovery:
             except Exception as e:
                 log.warning("Failed to init read-only ClobClient: %s", e)
 
+        # conditionId validity cache — checked once per session per cid.
+        # True  = registered on CTF (getOutcomeSlotCount > 0) → safe to trade
+        # False = not registered (zombie) → skip all tokens for this cid
+        # None  = not yet checked
+        self._cid_valid: dict[str, bool] = {}
+        self._w3 = None  # lazy-initialised on first validation call
+
     def needs_refresh(self) -> bool:
         return time.time() - self._last_discovery > CFG.discovery_interval
+
+    def _get_w3(self):
+        """Lazy Web3 connection — only created when conditionId validation runs."""
+        if self._w3 and self._w3.is_connected():
+            return self._w3
+        try:
+            from web3 import Web3
+            for rpc in _POLYGON_RPCS:
+                try:
+                    w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 8}))
+                    if w3.is_connected():
+                        self._w3 = w3
+                        return w3
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+        return None
+
+    def _validate_condition_sync(self, cid_hex: str) -> bool:
+        """Check that a conditionId is registered on the CTF contract.
+
+        Runs synchronously — always called via thread executor from async context.
+
+        Returns True  → getOutcomeSlotCount > 0 → condition exists → safe to trade
+        Returns False → count == 0 or RPC failed → zombie / unknown → skip
+        """
+        if not cid_hex:
+            return True  # no conditionId from Gamma API — fail-open, don't block
+
+        # Normalise hex
+        if not cid_hex.startswith("0x"):
+            cid_hex = "0x" + cid_hex
+
+        w3 = self._get_w3()
+        if not w3:
+            log.debug("conditionId validation skipped (no RPC): %s", cid_hex[:18])
+            return True  # fail-open: don't block trades if we can't reach the node
+
+        try:
+            from web3 import Web3 as _W3
+            ctf = w3.eth.contract(
+                address=_W3.to_checksum_address(_CTF_ADDRESS),
+                abi=_CTF_SLOT_ABI,
+            )
+            condition_bytes = bytes.fromhex(cid_hex[2:])
+            slots = ctf.functions.getOutcomeSlotCount(condition_bytes).call()
+            if slots == 0:
+                log.warning(
+                    "[PRE-ENTRY] conditionId %s not registered on CTF "
+                    "(getOutcomeSlotCount=0) — market will be excluded",
+                    cid_hex[:18],
+                )
+                return False
+            log.debug("conditionId %s validated (slots=%d)", cid_hex[:18], slots)
+            return True
+        except Exception as e:
+            log.debug("conditionId %s validation error: %s — fail-open", cid_hex[:18], e)
+            return True  # fail-open: RPC errors must not silently kill trading
 
     async def discover(self):
         """Find active markets using deterministic slug lookup."""
@@ -76,6 +164,38 @@ class MarketDiscovery:
                             found.update(tokens)
         except Exception as e:
             log.error("Discovery failed: %s", e)
+
+        # ── On-chain conditionId validation ──────────────────────────────
+        # For each conditionId we haven't seen before, check that it is
+        # registered on the CTF contract (getOutcomeSlotCount > 0).
+        # This runs in the thread executor so it doesn't block the event loop.
+        # Fail-open: if the RPC call fails, the token is kept.
+        loop2 = asyncio.get_running_loop()
+        new_cids = {
+            tok.conditionId
+            for tok in found.values()
+            if tok.conditionId and tok.conditionId not in self._cid_valid
+        }
+        for cid in new_cids:
+            valid = await loop2.run_in_executor(
+                self._executor, self._validate_condition_sync, cid
+            )
+            self._cid_valid[cid] = valid
+
+        # Remove tokens for zombie conditionIds (registered=False)
+        zombie_cids = {cid for cid, ok in self._cid_valid.items() if not ok}
+        if zombie_cids:
+            before = len(found)
+            found = {
+                tid: tok for tid, tok in found.items()
+                if not tok.conditionId or tok.conditionId not in zombie_cids
+            }
+            removed = before - len(found)
+            if removed:
+                log.warning(
+                    "[PRE-ENTRY] Excluded %d token(s) for unregistered conditionId(s): %s",
+                    removed, [c[:18] for c in zombie_cids],
+                )
 
         # Merge and prune expired
         now2 = time.time()
@@ -140,6 +260,8 @@ class MarketDiscovery:
                 if isinstance(prices, str):
                     prices = json.loads(prices)
 
+                cid = m.get("conditionId") or m.get("condition_id") or ""
+
                 for i, tid in enumerate(tids):
                     tid = str(tid)
                     oc = str(outcomes[i]).lower() if i < len(outcomes) else ""
@@ -152,6 +274,7 @@ class MarketDiscovery:
                         token_id=tid, asset=asset, direction=direction,
                         duration=dur_str, end_ts=end_ts, window_ts=wts,
                         book_price=price, book_updated=0,
+                        conditionId=cid,
                     )
 
                     # Pass opening price from Gamma to PriceFeeds

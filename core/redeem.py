@@ -9,10 +9,13 @@ Two market types handled:
   - Neg-risk:         redeemPositions() on NegRisk adapter
 
 Defenses active:
+  - On-chain oracle guard         (payoutNumerators > 0 required — no ghost burns)
+  - Settlement buffer             (180s after market end before on-chain check)
   - Null/zero address burn guard  (sys.exit — no fallback)
   - Dynamic gas escalator         (+20% every 60s, +50% final)
   - 3-block confirmation wait     (re-org safety)
   - Actual USDC.e Transfer parsing (not Data API estimate)
+  - Idempotency set               (session-level double-redeem protection)
 """
 
 import asyncio
@@ -71,6 +74,11 @@ USDC_TRANSFER_ABI = [
     }
 ]
 
+# ── Settlement buffer ─────────────────────────────────────────────────
+# Minimum seconds after market end before attempting any on-chain check.
+# Gives the oracle time to submit the report without hammering RPC.
+_SETTLEMENT_BUFFER_SEC = 180
+
 # ── Contract ABIs ─────────────────────────────────────────────────────
 CTF_ABI = [
     {
@@ -85,6 +93,25 @@ CTF_ABI = [
         "outputs": [],
         "stateMutability": "nonpayable",
     },
+    {
+        "name": "payoutNumerators",
+        "type": "function",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "index",       "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+    },
+    {
+        "name": "getOutcomeSlotCount",
+        "type": "function",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+    },
 ]
 
 NEG_RISK_ABI = [
@@ -97,6 +124,16 @@ NEG_RISK_ABI = [
         ],
         "outputs": [],
         "stateMutability": "nonpayable",
+    },
+    {
+        "name": "payoutNumerators",
+        "type": "function",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "index",       "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
     },
 ]
 
@@ -120,6 +157,57 @@ def _guard_address(addr: str, context: str) -> str:
         log.critical("BURN GUARD [%s]: zero address blocked — halting.", context)
         sys.exit(1)
     return checksum
+
+
+# ── On-chain Oracle Resolution Gate ──────────────────────────────────
+
+def _check_oracle_resolved(
+    w3: Web3,
+    contract_addr: str,
+    abi: list,
+    condition_id: bytes,
+    outcome_index: int,
+    cid_hex: str,
+) -> tuple[bool, int]:
+    """Check payoutNumerators on-chain before any redemption attempt.
+
+    Returns (resolved, payout_numerator).
+      resolved=True  → payout > 0 → oracle has spoken → safe to redeem
+      resolved=False → payout == 0 → oracle silent → BLOCK, queue retry
+
+    Falls back to getOutcomeSlotCount (standard CTF only) to detect whether
+    the condition was ever registered. If the RPC call itself fails, we block
+    to prevent a burn on uncertain state.
+    """
+    try:
+        contract = w3.eth.contract(address=contract_addr, abi=abi)
+        payout = contract.functions.payoutNumerators(
+            condition_id, outcome_index
+        ).call()
+        if payout > 0:
+            return True, payout
+
+        # Fallback: verify condition exists at all (standard CTF only)
+        if "getOutcomeSlotCount" in [f["name"] for f in abi]:
+            try:
+                slots = contract.functions.getOutcomeSlotCount(condition_id).call()
+                if slots == 0:
+                    log.warning(
+                        "[GUARD] conditionId=%s not registered on CTF "
+                        "(getOutcomeSlotCount=0) — blocking redemption", cid_hex[:18]
+                    )
+            except Exception:
+                pass
+
+        log.info("[GUARD] Waiting for Oracle resolution (conditionId=%s)", cid_hex[:18])
+        return False, 0
+
+    except Exception as e:
+        log.warning(
+            "[GUARD] payoutNumerators RPC call failed (conditionId=%s): %s "
+            "— blocking redemption on uncertain state", cid_hex[:18], e
+        )
+        return False, 0
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -283,28 +371,74 @@ def _wait_confirmations(w3: Web3, receipt) -> bool:
 # ── Core redemption ───────────────────────────────────────────────────
 
 def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
-                gas_price: int) -> tuple[bool, float]:
+                gas_price: int) -> tuple[bool, float, bool]:
     """Submit a redemption tx for a single position.
 
-    Returns (success, actual_usdc_received).
-    actual_usdc_received is parsed from on-chain Transfer events;
-    0.0 means the tx ran but no real tokens were held (database-only).
+    Returns (success, actual_usdc_received, nonce_consumed).
+
+    nonce_consumed=True  → a tx was sent to the mempool; caller must advance nonce.
+    nonce_consumed=False → no tx was submitted (oracle blocked, bad data, etc.);
+                           caller must NOT advance nonce.
+
+    Oracle guard: payoutNumerators is read on-chain BEFORE any tx is built.
+    If the oracle has not reported, the position is blocked and returned as
+    (False, 0.0, False) WITHOUT burning any tokens — the caller retries later.
     """
     cid = pos.get("conditionId", pos.get("condition_id", ""))
     if not cid:
-        return False, 0.0
+        return False, 0.0, False
     if not cid.startswith("0x"):
         cid = "0x" + cid
 
-    condition_id = bytes.fromhex(cid[2:])
-    neg_risk     = pos.get("negativeRisk")
-    market       = pos.get("title", cid[:12])
+    condition_id  = bytes.fromhex(cid[2:])
+    neg_risk      = pos.get("negativeRisk")
+    market        = pos.get("title", cid[:12])
+    outcome_index = int(pos.get("outcomeIndex", 0))
 
+    # Unsupported market type — checked early to avoid wasting an RPC call
+    if neg_risk not in (True, False):
+        log.warning("Skipping %s: unsupported market type (negativeRisk=%r)",
+                    market, neg_risk)
+        return False, 0.0, False
+
+    # ── Settlement buffer: don't spam RPC immediately after end_time ──
+    end_time = pos.get("endTime") or pos.get("end_time")
+    if end_time:
+        try:
+            elapsed_since_end = time.time() - float(end_time)
+            if elapsed_since_end < _SETTLEMENT_BUFFER_SEC:
+                log.info(
+                    "[GUARD] Waiting for Oracle resolution (conditionId=%s) "
+                    "— only %.0fs since market end (buffer=%ds)",
+                    cid[:18], elapsed_since_end, _SETTLEMENT_BUFFER_SEC,
+                )
+                return False, 0.0, False
+        except (TypeError, ValueError):
+            pass  # endTime missing or not a number — skip buffer check
+
+    # ── PRIMARY GUARD: on-chain payoutNumerators check ─────────────────
+    # Must pass before ANY transaction is built. If the oracle has not
+    # called reportPayouts, payoutNumerator == 0 and we would burn tokens
+    # for zero USDC. Block here and let the caller retry.
+    guard_addr = NEG_RISK_ADAPTER if neg_risk is True else CTF_ADDRESS
+    guard_abi  = NEG_RISK_ABI     if neg_risk is True else CTF_ABI
+    resolved, _ = _check_oracle_resolved(
+        w3, guard_addr, guard_abi, condition_id, outcome_index, cid
+    )
+    if not resolved:
+        log.warning(
+            "[BLOCKED] Ghost redemption prevented — payoutNumerator=0 "
+            "(conditionId=%s market=%s)", cid[:18], market
+        )
+        return False, 0.0, False
+
+    # ── Build and submit transaction ───────────────────────────────────
+    # After this point a tx may reach the mempool → nonce_consumed = True.
+    _nonce_consumed = False
     try:
         if neg_risk is True:
-            size_raw      = int(float(pos.get("size", 0)) * 1e6)
-            outcome_index = int(pos.get("outcomeIndex", 0))
-            amounts       = [0, 0]
+            size_raw = int(float(pos.get("size", 0)) * 1e6)
+            amounts  = [0, 0]
             amounts[outcome_index] = size_raw
 
             contract = w3.eth.contract(address=NEG_RISK_ADAPTER, abi=NEG_RISK_ABI)
@@ -318,7 +452,7 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
                 "chainId":  137,
             })
 
-        elif neg_risk is False:
+        else:  # neg_risk is False — standard binary CTF
             contract = w3.eth.contract(address=CTF_ADDRESS, abi=CTF_ABI)
             tx = contract.functions.redeemPositions(
                 USDC_ADDRESS, b"\x00" * 32, condition_id, [1, 2]
@@ -330,22 +464,18 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
                 "chainId":  137,
             })
 
-        else:
-            log.warning("Skipping %s: unsupported market type (negativeRisk=%r)",
-                        market, neg_risk)
-            return False, 0.0
-
         signed  = w3.eth.account.sign_transaction(tx, CFG.private_key)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        _nonce_consumed = True  # tx is in the mempool from this point
 
         # Priority 1: escalate gas if stuck
         receipt = _wait_with_escalation(w3, tx_hash, tx, nonce, gas_price)
         if receipt is None:
-            return False, 0.0
+            return False, 0.0, True
 
         if receipt.status != 1:
             log.error("Redeem REVERTED: %s | tx: 0x%s", market, tx_hash.hex())
-            return False, 0.0
+            return False, 0.0, True
 
         # Priority 6: 3-block confirmation before parsing payout
         _wait_confirmations(w3, receipt)
@@ -362,11 +492,11 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
                 "— no USDC.e Transfer to wallet (database-only?)",
                 market, tx_hash.hex(), receipt.blockNumber,
             )
-        return True, actual_usdc
+        return True, actual_usdc, True
 
     except Exception as e:
         log.error("Failed to redeem %s: %s", market, e)
-        return False, 0.0
+        return False, 0.0, _nonce_consumed
 
 
 _redeemed_cids: set[str] = set()   # session-level guard against double-redemption
@@ -388,10 +518,17 @@ def redeem_all() -> tuple[int, float]:
 
     # Filter positions already redeemed this session — Data API can lag
     # and return the same position again before on-chain state propagates.
-    positions = [
-        p for p in positions
-        if p.get("conditionId", p.get("condition_id", "")) not in _redeemed_cids
-    ]
+    skipped = []
+    filtered = []
+    for p in positions:
+        cid_key = p.get("conditionId", p.get("condition_id", ""))
+        if cid_key in _redeemed_cids:
+            skipped.append(cid_key)
+        else:
+            filtered.append(p)
+    for cid_key in skipped:
+        log.info("[SKIP] Already redeemed conditionId %s", cid_key[:18])
+    positions = filtered
     if not positions:
         log.info("No positions to redeem")
         return 0, 0.0
@@ -410,16 +547,19 @@ def redeem_all() -> tuple[int, float]:
     gas_price  = w3.eth.gas_price
 
     for pos in positions:
-        ok, usdc_received = _redeem_one(w3, wallet, pos, nonce, gas_price)
+        ok, usdc_received, nonce_consumed = _redeem_one(
+            w3, wallet, pos, nonce, gas_price
+        )
         if ok:
             redeemed   += 1
             total_usdc += usdc_received
             cid = pos.get("conditionId", pos.get("condition_id", ""))
             if cid:
                 _redeemed_cids.add(cid)
-        # Always advance nonce — even skipped/failed positions consume the slot
-        # if a tx reached the mempool before the error.
-        nonce += 1
+        # Advance nonce ONLY if a tx reached the mempool — oracle-blocked
+        # positions never submit, so their nonce slot must not be consumed.
+        if nonce_consumed:
+            nonce += 1
 
     log.info(
         "Redemption complete: %d/%d positions ($%.4f USDC.e actual on-chain)",

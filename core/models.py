@@ -14,6 +14,7 @@ class Token:
     window_ts: int
     book_price: float = 0.5
     book_updated: float = 0.0
+    conditionId: str = ""   # CTF conditionId — empty if Gamma API didn't return it
 
 
 @dataclass

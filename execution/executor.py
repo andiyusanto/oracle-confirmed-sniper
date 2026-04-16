@@ -355,6 +355,22 @@ class Executor:
                     "Fix the issue and restart the bot.", e)
                 return False
 
+            # Transient server-side errors — not fatal, outer loop retries
+            # with fresh book data on the next poll cycle (~0.8s).
+            # Do NOT retry inside this method: the order may have been
+            # partially processed on Polymarket's side, and re-submitting
+            # the same signed order risks a duplicate fill.
+            if any(t in err_str for t in [
+                "status_code=500", "status_code=502",
+                "status_code=503", "status_code=504",
+                "could not run the execution",
+                "internal server error",
+                "connection reset", "connection aborted",
+                "read timeout", "remote end closed",
+            ]):
+                log.warning("LIVE ORDER transient error (outer loop will retry): %s", e)
+                return False
+
             log.error("LIVE ORDER EXCEPTION: %s", e, exc_info=True)
             return False
 
