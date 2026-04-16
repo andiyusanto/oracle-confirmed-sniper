@@ -170,16 +170,22 @@ async def run(is_live: bool, portfolio: float):
 
     # Pending redemption queue: timestamp when a WIN was detected.
     # Polymarket Data API takes 1–15 min after resolution to list positions
-    # as redeemable, so we retry every 90s until actual USDC.e is received.
+    # as redeemable, so we retry every 45s until actual USDC.e is received.
+    # Note: on-chain oracle (payoutNumerators) can legitimately take 1-2+ hours
+    # to settle — the queue must survive the full oracle dispute window.
     _redeem_pending_ts: float = 0.0       # 0 = no pending redemption
     _last_redeem_attempt_ts: float = 0.0  # last time we called redeem_all
-    _REDEEM_RETRY_INTERVAL = 90.0         # seconds between retry attempts
-    _REDEEM_MAX_WAIT = 1200.0             # Bug 5 fix: give up after 20 min
+    _REDEEM_RETRY_INTERVAL = 45.0         # seconds between retry attempts (was 90s)
+    _REDEEM_MAX_WAIT = 14400.0            # stop queue after 4 hours (was 20 min)
+    _REDEEM_SLOW_ALERT_SEC = 3600.0       # Telegram alert if still waiting at 1 hour
+    _redeem_slow_alerted: bool = False    # ensures 1-hour alert fires only once
 
-    # Bug 2+3+4 fix: periodic scan catches orphaned wins regardless of
-    # bot-computed PnL or whether a new win triggers the queue.
+    # Periodic scan catches orphaned wins regardless of bot-computed PnL
+    # or whether a new win triggers the queue (bot restart, oracle delay, etc).
+    # Initialized to now so it doesn't fire immediately on the first loop
+    # iteration — startup scan above already covered any pending positions.
     _PERIODIC_REDEEM_INTERVAL = 900.0     # scan every 15 min unconditionally
-    _last_periodic_redeem_ts: float = 0.0
+    _last_periodic_redeem_ts: float = time.time()
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
@@ -202,41 +208,63 @@ async def run(is_live: bool, portfolio: float):
                             _redeem_pending_ts = now
                             log.info("WIN detected — redemption queued")
 
-                # Retry redemption while pending — attempt immediately, then
-                # every 90s. Only clears when real USDC.e is confirmed received.
+                # Retry redemption while pending — attempt immediately on first
+                # detection, then every 45s. Clears only when USDC.e is confirmed.
                 if is_live and _redeem_pending_ts > 0:
                     waited = now - _redeem_pending_ts
                     since_last = now - _last_redeem_attempt_ts
+
+                    # 1-hour alert: oracle is taking unusually long (ghost redemption guard
+                    # blocking — payoutNumerators still 0). Position is safe — not burned.
+                    # Periodic scan will redeem automatically once oracle settles.
+                    if not _redeem_slow_alerted and waited >= _REDEEM_SLOW_ALERT_SEC:
+                        _redeem_slow_alerted = True
+                        log.warning("Redemption still pending after %.0fm — oracle has not settled yet. "
+                                    "Position is safe. Periodic scan will retry every 15 min.",
+                                    waited / 60)
+                        await telegram.notify_oracle_slow(waited)
+
                     if waited >= _REDEEM_MAX_WAIT:
-                        log.warning("Redemption gave up after %.0fs — run redeem_now.py manually", waited)
+                        # Queue has been active for 4 hours — hand off to periodic scan.
+                        # The periodic scan will continue retrying every 15 min indefinitely.
+                        log.warning("Redemption queue cleared after %.0fh — "
+                                    "periodic scan will continue retrying every 15 min. "
+                                    "Run redeem_now.py to force immediately.",
+                                    waited / 3600)
                         _redeem_pending_ts = 0.0
                         _last_redeem_attempt_ts = 0.0
+                        _redeem_slow_alerted = False
                     elif since_last >= _REDEEM_RETRY_INTERVAL:
                         _last_redeem_attempt_ts = now
+                        # Sync periodic timer so the two callers don't double-fire
+                        # when their intervals happen to align on the same cycle.
+                        _last_periodic_redeem_ts = now
                         count, total_usdc = await redeem.redeem_all_async()
                         if count > 0:
-                            # Bug 6 fix: sync_balance is blocking HTTP — run in executor
                             loop = asyncio.get_running_loop()
                             await loop.run_in_executor(None, executor.sync_balance)
                         if total_usdc > 0:
                             log.info("Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
                                      count, total_usdc)
                             await telegram.notify_redeemed(count, total_usdc)
-                            _redeem_pending_ts = 0.0       # confirmed — done
+                            _redeem_pending_ts = 0.0
                             _last_redeem_attempt_ts = 0.0
+                            _redeem_slow_alerted = False
                         elif count > 0:
                             log.info("Redeem txs sent (%d) but no USDC.e Transfer yet — retrying in %.0fs",
                                      count, _REDEEM_RETRY_INTERVAL)
                         else:
-                            log.info("No redeemable positions yet (waited %.0fs) — retrying in %.0fs",
+                            log.info("Waiting for Data API to index position "
+                                     "(waited %.0fs, retry in %.0fs)",
                                      waited, _REDEEM_RETRY_INTERVAL)
 
-                # Bug 2+3+4 fix: periodic scan every 15 min — catches orphaned
-                # wins regardless of bot-computed PnL or queue state.
-                # Covers: bot restart after win, oracle miscalculation, second
-                # win that became redeemable after the queue already cleared.
+                # Periodic scan every 15 min — catches orphaned wins regardless
+                # of bot-computed PnL or queue state (bot restart, oracle delay,
+                # second win that became redeemable after the queue cleared).
                 if is_live and (now - _last_periodic_redeem_ts) >= _PERIODIC_REDEEM_INTERVAL:
                     _last_periodic_redeem_ts = now
+                    # Sync retry timer so pending queue doesn't also fire this cycle
+                    _last_redeem_attempt_ts = now
                     p_count, p_usdc = await redeem.redeem_all_async()
                     if p_usdc > 0:
                         loop = asyncio.get_running_loop()
@@ -244,12 +272,13 @@ async def run(is_live: bool, portfolio: float):
                         log.info("Periodic redeem: %d position(s) $%.4f USDC.e",
                                  p_count, p_usdc)
                         await telegram.notify_redeemed(p_count, p_usdc)
-                        # Also clear the win queue if it was pending
                         _redeem_pending_ts = 0.0
                         _last_redeem_attempt_ts = 0.0
                     elif p_count > 0:
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, executor.sync_balance)
+                    else:
+                        log.info("Periodic check: no redeemable positions")
 
                 # Risk check
                 can_trade, reason = risk.can_trade()

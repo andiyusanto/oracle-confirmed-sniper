@@ -237,6 +237,25 @@ async def notify_redeem_result(attempted: int, redeemed: int,
     return await send(msg)
 
 
+async def notify_oracle_slow(waited_sec: float) -> bool:
+    """Send alert when on-chain oracle hasn't settled after 1+ hour.
+
+    Reassures that funds are safe (ghost redemption guard blocked burns)
+    and the periodic scan will redeem automatically once oracle settles.
+    """
+    waited_min = int(waited_sec / 60)
+    msg = (
+        f"⏳ <b>ORACLE SLOW — POSITION SAFE</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Redemption pending for <b>{waited_min} min</b>\n"
+        f"On-chain oracle has not settled yet (payoutNumerators=0).\n"
+        f"✅ Tokens are safe — ghost redemption guard is blocking burns.\n"
+        f"🔄 Periodic scan will redeem automatically once oracle settles.\n"
+        f"Run <code>python3 redeem_now.py</code> to retry immediately."
+    )
+    return await send(msg)
+
+
 async def notify_bot_start(mode: str, portfolio: float) -> bool:
     """Send alert when bot starts."""
     msg = (
