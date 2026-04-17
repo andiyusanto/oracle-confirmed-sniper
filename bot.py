@@ -317,8 +317,12 @@ async def run(is_live: bool, portfolio: float):
 
                     # Execute
                     trade = executor.execute(signal)
+                    # Always mark window as traded — prevents the same window from
+                    # re-firing on every loop iteration when live execution fails
+                    # (CANCELLED trade). Without this, one failed window generates
+                    # 100+ CANCELLED records before it expires.
+                    engine.mark_traded(token.asset, token.window_ts)
                     if trade:
-                        engine.mark_traded(token.asset, token.window_ts)
                         risk.on_trade()
                         dash.signals_fired += 1
                         await telegram.notify_trade_opened(trade)
@@ -345,34 +349,52 @@ async def run(is_live: bool, portfolio: float):
                             (expected_up and delta < 0) or
                             (not expected_up and delta > 0)
                         )
+                        # Strategy 2: delta collapse — oracle move faded to
+                        # noise level without reversing direction. The edge
+                        # that justified entry no longer exists.
+                        delta_collapsed = (
+                            not delta_reversed
+                            and abs(delta) < CFG.min_delta_pct
+                        )
 
-                        if delta_reversed:
+                        should_exit = delta_reversed or delta_collapsed
+                        if should_exit:
                             token_id = executor._open_token_ids.get(wkey)
                             if not token_id:
                                 continue
+                            # Strategy 1: adaptive hold — scale hold time by
+                            # remaining TTL so we exit faster when little time
+                            # remains.  20% of TTL, floored at 2s, capped at
+                            # exit_reversal_hold_sec.
+                            effective_hold = max(
+                                2.0,
+                                min(CFG.exit_reversal_hold_sec,
+                                    ttl_pos * 0.20),
+                            )
                             first_rev = executor._reversal_first_ts.get(wkey)
+                            reason = "reversal" if delta_reversed else "collapse"
                             if first_rev is None:
                                 executor._reversal_first_ts[wkey] = now
                                 log.debug(
-                                    "REVERSAL DETECTED %s delta=%.4f%% "
-                                    "— watching for %.0fs hold",
-                                    wkey, delta, CFG.exit_reversal_hold_sec,
+                                    "EXIT WATCH %s [%s] delta=%.4f%% "
+                                    "— holding %.1fs (ttl=%.0fs)",
+                                    wkey, reason, delta, effective_hold, ttl_pos,
                                 )
-                            elif now - first_rev >= CFG.exit_reversal_hold_sec:
+                            elif now - first_rev >= effective_hold:
                                 log.warning(
-                                    "REVERSAL CONFIRMED %s: delta=%.4f%% "
-                                    "held %.0fs — attempting exit",
-                                    wkey, delta, now - first_rev,
+                                    "EXIT CONFIRMED %s [%s]: delta=%.4f%% "
+                                    "held %.1fs — attempting exit",
+                                    wkey, reason, delta, now - first_rev,
                                 )
                                 sold = executor.sell_position(wkey, token_id, trade)
                                 if sold:
                                     risk.update_portfolio(trade.pnl)
                                     await telegram.notify_trade_closed(trade)
                         else:
-                            # Delta recovered — clear reversal timer
+                            # Delta healthy — clear exit watch timer
                             if wkey in executor._reversal_first_ts:
-                                log.debug("REVERSAL CLEARED %s: delta recovered "
-                                          "to %.4f%%", wkey, delta)
+                                log.debug("EXIT WATCH CLEARED %s: delta=%.4f%%",
+                                          wkey, delta)
                                 executor._reversal_first_ts.pop(wkey, None)
 
                 live.update(dash.render())

@@ -113,10 +113,12 @@ class HybridEngine:
                 )
                 return None
 
-        # c) Heavy fade — weak + strong signals (extreme can ride retracements)
+        # c) Delta must be growing — weak + strong signals only.
+        #    Current |delta| must be >= |delta 20s ago| (momentum building,
+        #    not just "not faded"). Extreme signals can ride retracements.
         if abs_delta < CFG.extreme_delta_pct:
             if past_delta_20 != 0.0 and abs(past_delta_20) >= CFG.min_delta_pct:
-                if abs_delta < abs(past_delta_20) * 0.40:
+                if abs_delta < abs(past_delta_20):
                     log.debug(
                         "MOMENTUM SKIP %s: delta fading (was %.4f%%, now %.4f%%)",
                         asset, past_delta_20, delta,

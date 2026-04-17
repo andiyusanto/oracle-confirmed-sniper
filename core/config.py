@@ -45,8 +45,8 @@ class Config:
 
     # ── Window timing ───────────────────────────────────────────────
     oracle_watch_sec: float = 120.0     # start watching at T-120s
-    snipe_entry_sec: float = 60.0       # max entry window (extreme delta)
-    snipe_entry_strong: float = 45.0    # strong delta entry
+    snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
+    snipe_entry_strong: float = 55.0    # strong delta entry
     snipe_entry_weak: float = 25.0      # weak delta entry — tighter window
     snipe_exit_sec: float = 3.0         # stop at T-3s (need fill time)
 
@@ -66,8 +66,8 @@ class Config:
     require_binance_agrees: bool = True
 
     # ── Confidence scoring ──────────────────────────────────────────
-    min_confidence: float = 35.0        # base threshold
-    min_confidence_strong: float = 30.0 # lower bar for strong deltas
+    min_confidence: float = 20.0        # floor only — real trades score 55+; was 35.0
+    min_confidence_strong: float = 15.0 # lower bar for strong deltas; was 30.0
     # Score components:
     #   delta_score:    0-40 (how far oracle moved from open)
     #   time_score:     0-30 (less time = more certain)
@@ -118,13 +118,13 @@ class Config:
 
     # ── Signal quality gates (ghost-redemption prevention) ──────────────
     # 1. Staleness hard gate: block entry when CL data is stale AND TTL > 15s
-    cl_staleness_hard_sec: float = 10.0  # CL seconds-old threshold for hard block
+    cl_staleness_hard_sec: float = 15.0  # CL seconds-old threshold for hard block; was 10.0
 
     # 2. Spread gate: skip tokens with wide bid-ask spread (thin/uncertain market)
     max_spread_pct: float = 0.20         # max spread as fraction of mid (0.20 = 20%)
 
     # 3. Consecutive pass: signal must pass all gates twice before firing
-    consecutive_pass_window_sec: float = 1.0  # max gap between two consecutive passes
+    consecutive_pass_window_sec: float = 2.0  # max gap between two consecutive passes; was 1.0
 
     # ── Live exit on oracle reversal ─────────────────────────────────────
     # After a fill, if oracle delta reverses and holds for exit_reversal_hold_sec,
