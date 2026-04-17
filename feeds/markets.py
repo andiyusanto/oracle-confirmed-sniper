@@ -59,7 +59,7 @@ class MarketDiscovery:
     def __init__(self, price_feeds=None):
         self.tokens: dict[str, Token] = {}
         self._last_discovery = 0.0
-        self._book_cache: dict[str, tuple[float, float]] = {}  # tid: (price, ts)
+        self._book_cache: dict[str, tuple[float, float, float]] = {}  # tid: (price, spread, ts)
         self._executor = ThreadPoolExecutor(max_workers=6)
         self._price_feeds = price_feeds
 
@@ -302,7 +302,9 @@ class MarketDiscovery:
         """
         now = time.time()
         cached = self._book_cache.get(token.token_id)
-        if cached and now - cached[1] < CFG.book_cache_sec:
+        if cached and now - cached[2] < CFG.book_cache_sec:
+            token.book_price = cached[0]
+            token.book_spread = cached[1]
             return cached[0]
 
         if not HAS_CLOB or not self._clob:
@@ -321,13 +323,17 @@ class MarketDiscovery:
                 # Return 0.99 so the signal engine's max_token_price
                 # check filters it out before execution.
                 if not asks:
-                    return 0.99
-                bb = max(bids) if bids else min(asks)
-                return (min(asks) + bb) / 2
+                    return 0.99, 1.0  # price, spread (1.0 = 100% = filtered out)
+                best_ask = min(asks)
+                best_bid = max(bids) if bids else best_ask
+                mid = (best_ask + best_bid) / 2
+                spread = (best_ask - best_bid) / mid if mid > 0 else 1.0
+                return mid, spread
 
-            price = await loop.run_in_executor(self._executor, _fetch)
-            self._book_cache[token.token_id] = (price, now)
+            price, spread = await loop.run_in_executor(self._executor, _fetch)
+            self._book_cache[token.token_id] = (price, spread, now)
             token.book_price = price
+            token.book_spread = spread
             token.book_updated = now
             return price
 

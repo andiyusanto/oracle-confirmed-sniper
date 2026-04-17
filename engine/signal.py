@@ -7,6 +7,11 @@ Optimizations applied:
   3. Improved fair_value curve with better calibration
   4. Minimum edge scaled by entry price (cheap tokens need bigger edge)
   5. Kelly-informed sizing with edge/variance awareness
+  6. Chainlink staleness hard gate — block entry when CL feed is stale
+  7. Direction reversal check extended to ALL signals (was weak-only)
+  8. Multi-point delta confirmation — checks 30s and 20s lookbacks
+  9. Spread width gate — skip thin/uncertain markets
+ 10. Consecutive pass confirmation — signal must pass all gates twice
 """
 
 import logging
@@ -30,6 +35,8 @@ class HybridEngine:
         self.feeds = feeds
         self._traded_windows: set[str] = set()
         self._asset_fill_ts: dict[str, float] = {}   # asset → last fill timestamp
+        # Consecutive-pass gate: token_id → timestamp of first pass
+        self._first_pass_ts: dict[str, float] = {}
 
     def evaluate(self, token: Token, portfolio: float,
                  is_live: bool = False) -> Optional[Signal]:
@@ -44,8 +51,6 @@ class HybridEngine:
             return None
 
         # ── GATE 1b: Per-asset cooldown after any fill ────────────
-        # Blocks 5m+15m double-fills when both windows share the same
-        # end_ts and are simultaneously in their entry window.
         last_fill = self._asset_fill_ts.get(asset, 0.0)
         if now - last_fill < self.ASSET_FILL_COOLDOWN:
             return None
@@ -59,39 +64,68 @@ class HybridEngine:
         if abs_delta < CFG.min_delta_pct:
             return None
 
+        # ── GATE 3.5: Chainlink staleness hard gate ───────────────
+        # If CL data is stale AND we still have >15s TTL, the delta direction
+        # is based on an outdated oracle price — too uncertain to trade.
+        # At TTL ≤ 15s the window is nearly done; staleness is less risky.
+        stale = self.feeds.chainlink_staleness(asset)
+        if stale > CFG.cl_staleness_hard_sec and ttl > 15.0:
+            log.debug(
+                "STALE SKIP %s: CL data %.0fs old (limit %.0fs), ttl=%.0fs",
+                asset, stale, CFG.cl_staleness_hard_sec, ttl,
+            )
+            return None
+
         # ── GATE 3b: Delta momentum filter ───────────────────────────
-        # Compare current delta to where it was 20 seconds ago.
-        # Weak signals (< strong_delta_pct) that are fading or reversing
-        # are the primary source of losing trades — the oracle moved our
-        # way early, but the market is already snapping back by entry time.
-        # Skip if:
-        #   a) direction reversed in the last 20s, OR
-        #   b) delta lost >60% of its strength in the last 20s (fading fast)
-        # Strong/extreme deltas skip this filter — large moves can afford
-        # minor retracements and still resolve in our direction.
-        if abs_delta < CFG.strong_delta_pct:
-            past_delta = self.feeds.oracle_delta_at(asset, token.window_ts, 20.0)
-            if past_delta != 0.0 and abs(past_delta) >= CFG.min_delta_pct:
-                # a) Direction reversed
-                if (delta > 0) != (past_delta > 0):
-                    log.debug(
-                        "MOMENTUM SKIP %s: delta reversed (was %.4f%%, now %.4f%%)",
-                        asset, past_delta, delta,
-                    )
-                    return None
-                # b) More than 60% of strength lost
-                if abs_delta < abs(past_delta) * 0.40:
+        # Three checks to confirm the oracle is genuinely moving our way:
+        #
+        #   a) No direction reversal in last 20s — ALL signals.
+        #      Strong signals no longer bypass this — a 0.08% delta that
+        #      reversed direction is just as risky as a weak reversal.
+        #
+        #   b) No direction reversal in last 30s — ALL signals.
+        #      Multi-point confirmation: direction must be stable over a
+        #      longer lookback, not just in the last 20s.
+        #
+        #   c) Heavy fade check — weak + strong signals only.
+        #      If current |delta| < 40% of |delta 20s ago|, the move is
+        #      collapsing fast. Extreme signals (≥ extreme_delta_pct) can
+        #      absorb larger retracements and still resolve in our favour.
+
+        past_delta_20 = self.feeds.oracle_delta_at(asset, token.window_ts, 20.0)
+        past_delta_30 = self.feeds.oracle_delta_at(asset, token.window_ts, 30.0)
+
+        # a) Direction reversal at 20s — ALL signals
+        if past_delta_20 != 0.0 and abs(past_delta_20) >= CFG.min_delta_pct:
+            if (delta > 0) != (past_delta_20 > 0):
+                log.debug(
+                    "MOMENTUM SKIP %s: reversed vs 20s ago (was %.4f%%, now %.4f%%)",
+                    asset, past_delta_20, delta,
+                )
+                return None
+
+        # b) Direction reversal at 30s — ALL signals
+        if past_delta_30 != 0.0 and abs(past_delta_30) >= CFG.min_delta_pct:
+            if (delta > 0) != (past_delta_30 > 0):
+                log.debug(
+                    "MOMENTUM SKIP %s: reversed vs 30s ago (was %.4f%%, now %.4f%%)",
+                    asset, past_delta_30, delta,
+                )
+                return None
+
+        # c) Heavy fade — weak + strong signals (extreme can ride retracements)
+        if abs_delta < CFG.extreme_delta_pct:
+            if past_delta_20 != 0.0 and abs(past_delta_20) >= CFG.min_delta_pct:
+                if abs_delta < abs(past_delta_20) * 0.40:
                     log.debug(
                         "MOMENTUM SKIP %s: delta fading (was %.4f%%, now %.4f%%)",
-                        asset, past_delta, delta,
+                        asset, past_delta_20, delta,
                     )
                     return None
 
         # ── GATE 4: Tiered timing based on delta strength ─────────
-        # Stronger delta = can enter earlier with confidence
-        # Weak delta = wait longer for time confirmation
         if abs_delta >= CFG.extreme_delta_pct:
-            max_entry_sec = CFG.snipe_entry_sec       # T-55s
+            max_entry_sec = CFG.snipe_entry_sec       # T-60s
         elif abs_delta >= CFG.strong_delta_pct:
             max_entry_sec = CFG.snipe_entry_strong     # T-45s
         else:
@@ -115,11 +149,20 @@ class HybridEngine:
         if price < CFG.min_token_price or price > CFG.max_token_price:
             return None
 
+        # ── GATE 6.5: Spread width gate ───────────────────────────
+        # Wide bid-ask spread = thin market, high uncertainty, oracle signal
+        # is unreliable or already priced in. Skip to avoid ghost-prone trades.
+        if token.book_spread > CFG.max_spread_pct:
+            log.debug(
+                "SPREAD SKIP %s: spread=%.1f%% > max %.0f%%",
+                asset, token.book_spread * 100, CFG.max_spread_pct * 100,
+            )
+            return None
+
         # ── GATE 7: Confidence scoring (adaptive threshold) ──────
         confidence = self._score(delta, ttl, price, asset,
                                  binance_agrees=binance_agrees)
 
-        # Strong deltas get a lower confidence threshold
         threshold = (CFG.min_confidence_strong
                      if abs_delta >= CFG.strong_delta_pct
                      else CFG.min_confidence)
@@ -130,11 +173,6 @@ class HybridEngine:
         fair_value = self._fair_value(delta, ttl)
         edge_pct = (fair_value - price) * 100
 
-        # Minimum edge must exceed break-even after taker fee, with an
-        # explicit absolute floor from config to guard against accidental
-        # loosening if taker_fee_pct is re-tuned.
-        # Break-even: fair_value = price / (1 - fee)
-        #   fee_edge  = price * fee / (1 - fee) * 100 + 1.0  (1% safety buffer)
         _fee = CFG.taker_fee_pct / 100
         fee_edge = price * _fee / (1 - _fee) * 100 + 1.0
         min_edge = max(CFG.min_edge_pct, fee_edge)
@@ -145,6 +183,31 @@ class HybridEngine:
         size = self._compute_size(price, edge_pct, portfolio, is_live)
         if size < 1.0:
             return None
+
+        # ── GATE 9: Consecutive pass confirmation ─────────────────
+        # Require this token to pass all gates on two consecutive evaluation
+        # cycles before firing. Filters single-cycle spikes from transient
+        # oracle data or brief CL price jumps.
+        # On first pass: record timestamp and return None (pending).
+        # On second pass within consecutive_pass_window_sec: proceed.
+        # Prune stale first-pass entries on every call.
+        cutoff = now - CFG.consecutive_pass_window_sec * 2
+        self._first_pass_ts = {k: v for k, v in self._first_pass_ts.items()
+                               if v > cutoff}
+
+        first_ts = self._first_pass_ts.get(token.token_id, 0.0)
+        if first_ts == 0.0:
+            self._first_pass_ts[token.token_id] = now
+            log.debug("PENDING %s: first pass recorded, awaiting confirmation",
+                      asset)
+            return None
+        elif now - first_ts > CFG.consecutive_pass_window_sec:
+            # First pass expired (gap too large) — reset and wait again
+            self._first_pass_ts[token.token_id] = now
+            log.debug("PENDING %s: first pass expired, resetting", asset)
+            return None
+        # Second pass within window — clear and proceed to fire
+        del self._first_pass_ts[token.token_id]
 
         # ── Build signal ──────────────────────────────────────────
         opening = self.feeds.openings.get(asset, {}).get(
@@ -165,9 +228,7 @@ class HybridEngine:
             size_usdc=size, time_remaining=ttl,
         )
 
-        # ── Composite tier: delta + edge + confidence ─────────────
-        # Delta alone is misleading — a 0.36% delta with 0.6% edge and
-        # conf=79 is not EXTREME. Tier reflects actual trade quality.
+        # ── Composite tier ────────────────────────────────────────
         if (abs_delta >= CFG.extreme_delta_pct
                 and edge_pct >= 15.0 and confidence >= 80):
             tier = "EXTREME"
@@ -183,9 +244,9 @@ class HybridEngine:
 
         log.info(
             "SIGNAL %s %s @ $%.3f | delta=%.4f%% conf=%.0f edge=%.1f%% "
-            "ttl=%.0fs size=$%.2f fair=$%.3f tier=%s",
+            "ttl=%.0fs size=$%.2f fair=$%.3f spread=%.1f%% tier=%s",
             asset, oracle_says, price, delta, confidence, edge_pct,
-            ttl, size, fair_value, tier,
+            ttl, size, fair_value, token.book_spread * 100, tier,
         )
 
         return signal
@@ -229,7 +290,6 @@ class HybridEngine:
         if ttl <= 5:
             ts = 30.0
         elif ttl <= 60:
-            # Linear from 30 (at 5s) to 8 (at 60s)
             ts = 30.0 - (ttl - 5) * (22.0 / 55.0)
         else:
             ts = 5.0
@@ -288,7 +348,6 @@ class HybridEngine:
             base = 0.50 + abs_d * 2.0
 
         # Time adjustment — continuous multiplier
-        # Less time = delta more likely to hold = higher probability
         if ttl <= 5:
             adj = 1.06
         elif ttl <= 10:
@@ -300,24 +359,16 @@ class HybridEngine:
         elif ttl <= 45:
             adj = 0.98
         else:
-            adj = 0.95  # early entries get discounted more
+            adj = 0.95
 
         return min(0.97, base * adj)
 
     def _compute_size(self, entry_price: float, edge_pct: float,
                       portfolio: float, is_live: bool) -> float:
-        """Dynamic position sizing.
-
-        Uses a simplified Kelly-informed approach:
-        - Base size from portfolio percentage
-        - Scaled by entry price tier
-        - Further scaled by edge magnitude (bigger edge = bigger bet)
-        """
-        # Base size
+        """Dynamic position sizing."""
         base = portfolio * CFG.max_position_pct / 100
         base = min(base, CFG.max_position_usdc)
 
-        # Tier multiplier
         if entry_price >= 0.85:
             mult = CFG.size_mult_high
         elif entry_price >= 0.70:
@@ -325,8 +376,6 @@ class HybridEngine:
         else:
             mult = CFG.size_mult_low
 
-        # Edge scaling: scale size by edge confidence
-        # Edge of 1% → 0.7x, edge of 5% → 1.0x, edge of 10%+ → 1.2x
         if edge_pct >= 10:
             edge_mult = 1.2
         elif edge_pct >= 5:
@@ -340,8 +389,6 @@ class HybridEngine:
 
         if is_live:
             size = min(size, CFG.live_max_usdc)
-            # Ensure size produces at least min_shares at this entry price
-            # (Polymarket rejects orders below 5 shares)
             min_size_usdc = CFG.min_shares * entry_price
             if size < min_size_usdc:
                 size = min_size_usdc

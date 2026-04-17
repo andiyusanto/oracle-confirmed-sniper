@@ -7,6 +7,7 @@ Fixes applied:
   4. Slippage modeling for paper mode
   5. Correct fee math on both win AND loss
   6. Final delta snapshot before window expiry
+  7. Live exit on oracle delta reversal (sell_position)
 """
 
 import logging
@@ -42,6 +43,9 @@ class Executor:
         self.open_positions: dict[str, Trade] = {}
         self._last_order_ts = 0.0
         self._clob: Optional[object] = None
+        # Reversal exit tracking
+        self._open_token_ids: dict[str, str] = {}     # wkey → token_id
+        self._reversal_first_ts: dict[str, float] = {}  # wkey → first reversal ts
 
         # Circuit breaker for fatal API errors (geoblock, auth failure)
         self._circuit_open = False
@@ -208,6 +212,7 @@ class Executor:
         self.db.save_trade(trade)
         wkey = f"{trade.asset}_{trade.window_ts}"
         self.open_positions[wkey] = trade
+        self._open_token_ids[wkey] = signal.token.token_id
         self._last_order_ts = now
         return trade
 
@@ -379,6 +384,107 @@ class Executor:
             log.error("LIVE ORDER EXCEPTION: %s", e, exc_info=True)
             return False
 
+    def sell_position(self, wkey: str, token_id: str, trade: Trade) -> bool:
+        """Attempt to exit an open position by selling at best bid.
+
+        Called when oracle delta reverses after a fill and holds for
+        exit_reversal_hold_sec. Converts an expected -100% loss into a
+        partial loss by recovering whatever the market bids for the tokens.
+
+        Paper mode: returns False — close_expired() handles paper PnL using
+        the final oracle delta, which already reflects the reversal outcome.
+
+        Live mode: places a SELL limit at best bid. On success, closes the
+        position immediately with actual exit PnL and removes it from
+        open_positions so close_expired() does not double-process it.
+        """
+        if not self.is_live:
+            return False  # paper positions are closed by close_expired()
+
+        if not self._clob or self._circuit_open:
+            return False
+
+        try:
+            book = self._clob.get_order_book(token_id)
+            bids = sorted(
+                [float(b.price) for b in (book.bids or []) if float(b.price) > 0],
+                reverse=True,
+            )
+
+            if not bids:
+                log.warning("REVERSAL EXIT: no bids for %s — cannot sell", wkey)
+                return False
+
+            best_bid = bids[0]
+
+            # Skip exit if the market is already near-worthless — selling at
+            # $0.05 when we paid $0.70 just crystallises the loss for no benefit.
+            # close_expired() will still record the final PnL via oracle delta.
+            if best_bid < 0.10:
+                log.warning(
+                    "REVERSAL EXIT: best bid $%.4f too low to sell %s "
+                    "— letting close_expired handle it", best_bid, wkey,
+                )
+                return False
+
+            tick_size = self._clob.get_tick_size(token_id)
+            price_d = float(
+                Decimal(str(best_bid)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            )
+            shares = float(
+                Decimal(str(trade.size_usdc / trade.entry_price)).quantize(
+                    Decimal("0.01"), rounding=ROUND_DOWN
+                )
+            )
+            if shares <= 0:
+                return False
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price_d,
+                size=shares,
+                side="SELL",
+                fee_rate_bps=200,
+            )
+            options = PartialCreateOrderOptions(
+                tick_size=tick_size,
+                neg_risk=False,
+            )
+
+            resp = self._clob.create_and_post_order(order_args, options)
+
+            order_id = None
+            if resp and isinstance(resp, dict):
+                order_id = resp.get("orderID") or resp.get("id")
+            elif resp and hasattr(resp, "orderID"):
+                order_id = resp.orderID
+
+            if order_id:
+                # Compute actual PnL: exit proceeds minus cost basis
+                exit_proceeds = shares * price_d * (1.0 - CFG.taker_fee_pct / 100)
+                pnl = round(exit_proceeds - trade.size_usdc, 6)
+                trade.pnl = pnl
+                trade.status = "CLOSED"
+                trade.closed_at = time.time()
+                self.db.close_trade(trade.id, pnl)
+                del self.open_positions[wkey]
+                self._open_token_ids.pop(wkey, None)
+                self._reversal_first_ts.pop(wkey, None)
+                log.warning(
+                    "REVERSAL EXIT: %s sold %.2f shares @ $%.4f "
+                    "(entry $%.4f) pnl=$%+.4f order=%s",
+                    wkey, shares, price_d, trade.entry_price, pnl, order_id,
+                )
+                return True
+            else:
+                log.warning("REVERSAL EXIT: sell order rejected for %s — %s",
+                            wkey, resp)
+                return False
+
+        except Exception as e:
+            log.error("REVERSAL EXIT error for %s: %s", wkey, e)
+            return False
+
     def _estimate_slippage(self, time_remaining: float,
                            book_mid: float) -> float:
         """Model slippage for paper trades."""
@@ -437,6 +543,8 @@ class Executor:
             trade.closed_at = now
             self.db.close_trade(trade.id, pnl)
             del self.open_positions[wkey]
+            self._open_token_ids.pop(wkey, None)
+            self._reversal_first_ts.pop(wkey, None)
 
             tag = "WIN" if pnl > 0 else "LOSS"
             log.info("[%s] %s %s pnl=$%+.4f (delta=%.4f%% entry=$%.3f "

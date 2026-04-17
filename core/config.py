@@ -116,6 +116,22 @@ class Config:
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
     durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
 
+    # ── Signal quality gates (ghost-redemption prevention) ──────────────
+    # 1. Staleness hard gate: block entry when CL data is stale AND TTL > 15s
+    cl_staleness_hard_sec: float = 10.0  # CL seconds-old threshold for hard block
+
+    # 2. Spread gate: skip tokens with wide bid-ask spread (thin/uncertain market)
+    max_spread_pct: float = 0.20         # max spread as fraction of mid (0.20 = 20%)
+
+    # 3. Consecutive pass: signal must pass all gates twice before firing
+    consecutive_pass_window_sec: float = 1.0  # max gap between two consecutive passes
+
+    # ── Live exit on oracle reversal ─────────────────────────────────────
+    # After a fill, if oracle delta reverses and holds for exit_reversal_hold_sec,
+    # attempt to sell the position back to the CLOB to limit the loss.
+    exit_reversal_min_ttl: float = 12.0  # skip exit if < 12s left in window
+    exit_reversal_hold_sec: float = 8.0  # reversal must persist this long before exiting
+
     # ── Infrastructure ──────────────────────────────────────────────
     db_path: str = "hybrid_trades.db"
     log_dir: str = "logs"             # daily logs saved as logs/YYYY-MM-DD_hybrid.log

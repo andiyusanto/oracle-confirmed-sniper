@@ -323,6 +323,58 @@ async def run(is_live: bool, portfolio: float):
                         dash.signals_fired += 1
                         await telegram.notify_trade_opened(trade)
 
+                # ── Live exit: monitor open positions for oracle reversal ──────
+                # If oracle delta reverses and holds for exit_reversal_hold_sec,
+                # sell the position back to the CLOB to limit the loss.
+                # Only active in live mode — paper positions are handled by
+                # close_expired() using the final oracle delta snapshot.
+                if is_live:
+                    for wkey, trade in list(executor.open_positions.items()):
+                        if trade.status != "OPEN":
+                            continue
+                        dur_sec = getattr(trade, "duration_sec", 300)
+                        ttl_pos = trade.window_ts + dur_sec - now
+                        if ttl_pos < CFG.exit_reversal_min_ttl:
+                            # Too close to expiry — let close_expired handle it
+                            executor._reversal_first_ts.pop(wkey, None)
+                            continue
+
+                        delta = feeds.oracle_delta(trade.asset, trade.window_ts)
+                        expected_up = (trade.direction == "UP")
+                        delta_reversed = (
+                            (expected_up and delta < 0) or
+                            (not expected_up and delta > 0)
+                        )
+
+                        if delta_reversed:
+                            token_id = executor._open_token_ids.get(wkey)
+                            if not token_id:
+                                continue
+                            first_rev = executor._reversal_first_ts.get(wkey)
+                            if first_rev is None:
+                                executor._reversal_first_ts[wkey] = now
+                                log.debug(
+                                    "REVERSAL DETECTED %s delta=%.4f%% "
+                                    "— watching for %.0fs hold",
+                                    wkey, delta, CFG.exit_reversal_hold_sec,
+                                )
+                            elif now - first_rev >= CFG.exit_reversal_hold_sec:
+                                log.warning(
+                                    "REVERSAL CONFIRMED %s: delta=%.4f%% "
+                                    "held %.0fs — attempting exit",
+                                    wkey, delta, now - first_rev,
+                                )
+                                sold = executor.sell_position(wkey, token_id, trade)
+                                if sold:
+                                    risk.update_portfolio(trade.pnl)
+                                    await telegram.notify_trade_closed(trade)
+                        else:
+                            # Delta recovered — clear reversal timer
+                            if wkey in executor._reversal_first_ts:
+                                log.debug("REVERSAL CLEARED %s: delta recovered "
+                                          "to %.4f%%", wkey, delta)
+                                executor._reversal_first_ts.pop(wkey, None)
+
                 live.update(dash.render())
                 await asyncio.sleep(CFG.poll_interval)
 
