@@ -104,9 +104,10 @@ class Config:
 
     # ── Edge filter floor ───────────────────────────────────────────
     # Minimum edge % required before a signal is traded, independent of the
-    # fee-based break-even calc. At 10% fee the fee_edge formula already
-    # produces a ~11% floor at $0.75; min_edge_pct acts as a sanity floor only.
-    min_edge_pct: float = 9.0
+    # fee-based break-even calc. With 1.5% taker fee, fee_edge ≈ 2% at $0.75;
+    # min_edge_pct=3.0 is ~2x the fee, ensuring positive EV after costs.
+    # Was 9.0, calibrated for 10% fee assumption — lowered after fee fix.
+    min_edge_pct: float = 3.0
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
