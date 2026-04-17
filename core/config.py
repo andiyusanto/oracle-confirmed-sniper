@@ -48,7 +48,7 @@ class Config:
     snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 55.0    # strong delta entry
     snipe_entry_weak: float = 25.0      # weak delta entry — tighter window
-    snipe_exit_sec: float = 3.0         # stop at T-3s (need fill time)
+    snipe_exit_sec: float = 16.0        # stop at T-16s — blocks all observed late-entry ghosts (TTL≤15s)
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
     min_delta_pct: float = 0.025        # raised: 0.015 admitted too many marginal signals
@@ -100,7 +100,7 @@ class Config:
     # wrong — CLOB rejected orders with fee_rate_bps=200.
     use_maker: bool = False
     maker_rebate_pct: float = 0.20   # unused while use_maker=False
-    taker_fee_pct: float = 10.0      # actual Polymarket taker fee = 10% (1000 bps)
+    taker_fee_pct: float = 1.5        # confirmed ~1.31% on-chain; 1.5% is a safe ceiling
 
     # ── Edge filter floor ───────────────────────────────────────────
     # Minimum edge % required before a signal is traded, independent of the
