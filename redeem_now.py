@@ -5,7 +5,8 @@ Redeems all resolved winning positions back to USDC.e in your wallet.
 Safe to run anytime — even while the bot is running.
 
 Usage:
-    python3 redeem_now.py
+    python3 redeem_now.py            # normal mode (oracle guard active)
+    python3 redeem_now.py --force    # bypass oracle guard (use for stuck positions)
 """
 
 import asyncio
@@ -18,9 +19,13 @@ SEPARATOR = "─" * 48
 
 
 def main():
+    force = "--force" in sys.argv
+
     print()
     print(SEPARATOR)
     print("  Polymarket Manual Redemption")
+    if force:
+        print("  ⚠️   FORCE MODE — oracle guard bypassed")
     print(SEPARATOR)
     print(f"  Wallet : {CFG.funder_address or '(not set)'}")
     print()
@@ -30,6 +35,14 @@ def main():
         print("      Run python3 setup.py first.")
         print()
         sys.exit(1)
+
+    if force:
+        print("  WARNING: --force skips the on-chain oracle check and settlement")
+        print("  buffer. If a position was settled against you, the tx will succeed")
+        print("  but return $0 USDC.e — tokens are burned, NOT recovered.")
+        print("  Only use this when you are certain the market resolved in your favour")
+        print("  and the normal check is blocking incorrectly.")
+        print()
 
     # ── Show redeemable positions first ──────────────────────────────
     print("  Fetching redeemable positions...")
@@ -54,7 +67,11 @@ def main():
     print(SEPARATOR)
     print()
 
-    confirm = input("  Redeem all? [yes/no]: ").strip().lower()
+    if force:
+        confirm = input("  Force-redeem all (bypassing oracle guard)? [yes/no]: ").strip().lower()
+    else:
+        confirm = input("  Redeem all? [yes/no]: ").strip().lower()
+
     if confirm not in ("yes", "y"):
         print("\n  Cancelled. Nothing was redeemed.\n")
         sys.exit(0)
@@ -66,7 +83,7 @@ def main():
 
     # ── Execute ───────────────────────────────────────────────────────
     print()
-    count, total_usdc = redeem_all()
+    count, total_usdc = redeem_all(force=force)
 
     print()
     print(SEPARATOR)

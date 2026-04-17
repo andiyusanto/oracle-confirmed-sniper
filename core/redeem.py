@@ -373,12 +373,12 @@ def _wait_confirmations(w3: Web3, receipt) -> bool:
     Polygon blocks are ~2s each → 3 blocks ≈ 6s extra safety.
     Returns True if confirmed within timeout, False otherwise (proceeds anyway).
     """
-    deadline = time.time() + _CONFIRM_TIMEOUT
-    target   = receipt.blockNumber + _CONFIRM_BLOCKS
+    deadline    = time.time() + _CONFIRM_TIMEOUT
+    target_block = receipt.blockNumber + _CONFIRM_BLOCKS
     while True:
         current = w3.eth.block_number
         confs   = current - receipt.blockNumber
-        if confs >= _CONFIRM_BLOCKS:
+        if current >= target_block:
             log.debug("Confirmed %d blocks (block %d)", confs, receipt.blockNumber)
             return True
         if time.time() >= deadline:
@@ -393,7 +393,7 @@ def _wait_confirmations(w3: Web3, receipt) -> bool:
 # ── Core redemption ───────────────────────────────────────────────────
 
 def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
-                gas_price: int) -> tuple[bool, float, bool, bool]:
+                gas_price: int, force: bool = False) -> tuple[bool, float, bool, bool]:
     """Submit a redemption tx for a single position.
 
     Returns (success, actual_usdc_received, nonce_consumed, definitely_lost).
@@ -407,6 +407,10 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
     Oracle guard: payoutNumerators is read on-chain BEFORE any tx is built.
     If the oracle has not reported, the position is blocked and returned as
     (False, 0.0, False, False) WITHOUT burning any tokens — the caller retries later.
+
+    force=True: skip settlement buffer and oracle guard — submits the tx regardless.
+    Use only when you know the market has resolved and want to bypass checks.
+    WARNING: if the oracle settled against you, the tx will succeed but return $0.
     """
     cid = pos.get("conditionId", pos.get("condition_id", ""))
     if not cid:
@@ -425,41 +429,47 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
                     market, neg_risk)
         return False, 0.0, False, False
 
-    # ── Settlement buffer: don't spam RPC immediately after end_time ──
-    end_time = pos.get("endTime") or pos.get("end_time")
-    if end_time:
-        try:
-            elapsed_since_end = time.time() - float(end_time)
-            if elapsed_since_end < _SETTLEMENT_BUFFER_SEC:
-                log.info(
-                    "[GUARD] Waiting for Oracle resolution (conditionId=%s) "
-                    "— only %.0fs since market end (buffer=%ds)",
-                    cid[:18], elapsed_since_end, _SETTLEMENT_BUFFER_SEC,
-                )
-                return False, 0.0, False, False
-        except (TypeError, ValueError):
-            pass  # endTime missing or not a number — skip buffer check
-
-    # ── PRIMARY GUARD: on-chain payoutNumerators check ─────────────────
-    # Must pass before ANY transaction is built. If the oracle has not
-    # called reportPayouts, payoutNumerator == 0 and we would burn tokens
-    # for zero USDC. Block here and let the caller retry.
-    # If the other outcome already has payout > 0, this is a confirmed LOSS —
-    # signal definitely_lost=True so the caller permanently skips this cid.
-    guard_addr = NEG_RISK_ADAPTER if neg_risk is True else CTF_ADDRESS
-    guard_abi  = NEG_RISK_ABI     if neg_risk is True else CTF_ABI
-    resolved, _, definitely_lost = _check_oracle_resolved(
-        w3, guard_addr, guard_abi, condition_id, outcome_index, cid
-    )
-    if not resolved:
-        if definitely_lost:
-            # Oracle confirmed we lost — no USDC recoverable, stop scanning this cid
-            return False, 0.0, False, True
+    if force:
         log.warning(
-            "[BLOCKED] Ghost redemption prevented — payoutNumerator=0 "
-            "(conditionId=%s market=%s)", cid[:18], market
+            "[FORCE] Skipping oracle guard for %s (conditionId=%s)",
+            market, cid[:18],
         )
-        return False, 0.0, False, False
+    else:
+        # ── Settlement buffer: don't spam RPC immediately after end_time ──
+        end_time = pos.get("endTime") or pos.get("end_time")
+        if end_time:
+            try:
+                elapsed_since_end = time.time() - float(end_time)
+                if elapsed_since_end < _SETTLEMENT_BUFFER_SEC:
+                    log.info(
+                        "[GUARD] Waiting for Oracle resolution (conditionId=%s) "
+                        "— only %.0fs since market end (buffer=%ds)",
+                        cid[:18], elapsed_since_end, _SETTLEMENT_BUFFER_SEC,
+                    )
+                    return False, 0.0, False, False
+            except (TypeError, ValueError):
+                pass  # endTime missing or not a number — skip buffer check
+
+        # ── PRIMARY GUARD: on-chain payoutNumerators check ─────────────────
+        # Must pass before ANY transaction is built. If the oracle has not
+        # called reportPayouts, payoutNumerator == 0 and we would burn tokens
+        # for zero USDC. Block here and let the caller retry.
+        # If the other outcome already has payout > 0, this is a confirmed LOSS —
+        # signal definitely_lost=True so the caller permanently skips this cid.
+        guard_addr = NEG_RISK_ADAPTER if neg_risk is True else CTF_ADDRESS
+        guard_abi  = NEG_RISK_ABI     if neg_risk is True else CTF_ABI
+        resolved, _, definitely_lost = _check_oracle_resolved(
+            w3, guard_addr, guard_abi, condition_id, outcome_index, cid
+        )
+        if not resolved:
+            if definitely_lost:
+                # Oracle confirmed we lost — no USDC recoverable, stop scanning this cid
+                return False, 0.0, False, True
+            log.warning(
+                "[BLOCKED] Ghost redemption prevented — payoutNumerator=0 "
+                "(conditionId=%s market=%s)", cid[:18], market
+            )
+            return False, 0.0, False, False
 
     # ── Build and submit transaction ───────────────────────────────────
     # After this point a tx may reach the mempool → nonce_consumed = True.
@@ -531,8 +541,14 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
 _redeemed_cids: set[str] = set()   # session-level guard against double-redemption
 
 
-def redeem_all() -> tuple[int, float]:
-    """Redeem all resolved positions. Returns (count_redeemed, total_usdc_received)."""
+def redeem_all(force: bool = False) -> tuple[int, float]:
+    """Redeem all resolved positions. Returns (count_redeemed, total_usdc_received).
+
+    force=True skips the settlement buffer and on-chain oracle guard.
+    Use when positions are stuck in the redeemable list and normal checks block them.
+    WARNING: a forced tx that the oracle settled against you will succeed on-chain
+    but return $0 USDC.e — the tokens are burned, not recovered.
+    """
     if not CFG.private_key:
         log.warning("Skipping redemption: POLY_PRIVATE_KEY not configured")
         return 0, 0.0
@@ -577,7 +593,7 @@ def redeem_all() -> tuple[int, float]:
 
     for pos in positions:
         ok, usdc_received, nonce_consumed, definitely_lost = _redeem_one(
-            w3, wallet, pos, nonce, gas_price
+            w3, wallet, pos, nonce, gas_price, force=force
         )
         cid = pos.get("conditionId", pos.get("condition_id", ""))
         if ok:
@@ -603,7 +619,7 @@ def redeem_all() -> tuple[int, float]:
     return redeemed, total_usdc
 
 
-async def redeem_all_async() -> tuple[int, float]:
+async def redeem_all_async(force: bool = False) -> tuple[int, float]:
     """Async wrapper — runs redeem_all() in a thread pool."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, redeem_all)
+    return await loop.run_in_executor(None, lambda: redeem_all(force=force))
