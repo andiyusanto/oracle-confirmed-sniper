@@ -96,20 +96,16 @@ class Config:
     # ── Fee structure ───────────────────────────────────────────────
     # Orders are placed at best_ask → immediate match → taker in practice.
     # Polymarket deducts the taker fee from token quantity at fill time.
-    # Observed data points:
-    #   5.12 shares ordered  → 4.991 received  (2.52% deducted)
-    #   7.18 shares ordered  → 7.051 received  (1.80% deducted, $7.05 redemption)
-    # Polymarket standard taker fee is 2%; use_maker=False ensures _compute_pnl
-    # charges the fee rather than adding a phantom maker rebate.
+    # Market requires fee_rate_bps=1000 (10%). Previous assumption of 2% was
+    # wrong — CLOB rejected orders with fee_rate_bps=200.
     use_maker: bool = False
     maker_rebate_pct: float = 0.20   # unused while use_maker=False
-    taker_fee_pct: float = 2.0       # actual Polymarket taker fee ~2%
+    taker_fee_pct: float = 10.0      # actual Polymarket taker fee = 10% (1000 bps)
 
     # ── Edge filter floor ───────────────────────────────────────────
     # Minimum edge % required before a signal is traded, independent of the
-    # fee-based break-even calc.  Keeps the filter stable even if taker_fee_pct
-    # is ever re-tuned.  Set to match the previous implicit floor (10% fee ×
-    # the fee-based formula at $0.75 ≈ 9.3%) so no regression in trade quality.
+    # fee-based break-even calc. At 10% fee the fee_edge formula already
+    # produces a ~11% floor at $0.75; min_edge_pct acts as a sanity floor only.
     min_edge_pct: float = 9.0
 
     # ── Market selection ────────────────────────────────────────────
