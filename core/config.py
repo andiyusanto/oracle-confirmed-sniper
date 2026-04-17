@@ -122,6 +122,11 @@ class Config:
     # 3. Consecutive pass: signal must pass all gates twice before firing
     consecutive_pass_window_sec: float = 2.0  # max gap between two consecutive passes; was 1.0
 
+    # 4. Unconfirmed delta TTL gate: when delta has no history above min_delta_pct
+    #    in the last 20s or 30s (appeared suddenly), require this minimum TTL.
+    #    Prevents late-entry ghost: transient CL spike resolves before CTF settlement.
+    min_ttl_unconfirmed_sec: float = 20.0
+
     # ── Live exit on oracle reversal ─────────────────────────────────────
     # After a fill, if oracle delta reverses and holds for exit_reversal_hold_sec,
     # attempt to sell the position back to the CLOB to limit the loss.

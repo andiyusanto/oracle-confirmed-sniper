@@ -125,6 +125,26 @@ class HybridEngine:
                     )
                     return None
 
+        # d) Unconfirmed delta age gate — ALL tiers.
+        #    Checks (a) and (b) are only evaluated when past_delta is above
+        #    threshold. If both 20s and 30s lookbacks are below min_delta_pct,
+        #    those checks were skipped entirely — the delta appeared suddenly
+        #    with no history. A transient CL spike that reverses before CTF
+        #    settlement causes a ghost even when snapshot looks correct.
+        #    Require minimum TTL when delta has no confirmed history.
+        delta_is_unconfirmed = (
+            (past_delta_20 == 0.0 or abs(past_delta_20) < CFG.min_delta_pct) and
+            (past_delta_30 == 0.0 or abs(past_delta_30) < CFG.min_delta_pct)
+        )
+        if delta_is_unconfirmed and ttl < CFG.min_ttl_unconfirmed_sec:
+            log.debug(
+                "UNCONFIRMED SKIP %s: delta appeared suddenly "
+                "(20s=%.4f%%, 30s=%.4f%%), ttl=%.0fs < min=%.0fs",
+                asset, past_delta_20, past_delta_30, ttl,
+                CFG.min_ttl_unconfirmed_sec,
+            )
+            return None
+
         # ── GATE 4: Tiered timing based on delta strength ─────────
         if abs_delta >= CFG.extreme_delta_pct:
             max_entry_sec = CFG.snipe_entry_sec       # T-60s
