@@ -380,7 +380,7 @@ class HybridEngine:
         elif ttl <= 30:
             adj = 1.02
         elif ttl <= 45:
-            adj = 0.98
+            adj = 1.00
         else:
             adj = 0.93
 

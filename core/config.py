@@ -47,7 +47,7 @@ class Config:
     oracle_watch_sec: float = 120.0     # start watching at T-120s
     snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 55.0    # strong delta entry
-    snipe_entry_weak: float = 25.0      # weak delta entry — tighter window
+    snipe_entry_weak: float = 35.0      # weak delta entry — widened from 25s; was 25.0
     snipe_exit_sec: float = 16.0        # stop at T-16s — blocks all observed late-entry ghosts (TTL≤15s)
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
@@ -107,7 +107,7 @@ class Config:
     # fee-based break-even calc. With 1.5% taker fee, fee_edge ≈ 2% at $0.75;
     # min_edge_pct=3.0 is ~2x the fee, ensuring positive EV after costs.
     # Was 9.0, calibrated for 10% fee assumption — lowered after fee fix.
-    min_edge_pct: float = 3.0
+    min_edge_pct: float = 2.5
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
@@ -115,13 +115,13 @@ class Config:
 
     # ── Signal quality gates (ghost-redemption prevention) ──────────────
     # 1. Staleness hard gate: block entry when CL data is stale AND TTL > 15s
-    cl_staleness_hard_sec: float = 15.0  # CL seconds-old threshold for hard block; was 10.0
+    cl_staleness_hard_sec: float = 30.0  # raised: aligns with best_price() 30s threshold; was 15.0
 
     # 2. Spread gate: skip tokens with wide bid-ask spread (thin/uncertain market)
     max_spread_pct: float = 0.20         # max spread as fraction of mid (0.20 = 20%)
 
     # 3. Consecutive pass: signal must pass all gates twice before firing
-    consecutive_pass_window_sec: float = 2.0  # max gap between two consecutive passes; was 1.0
+    consecutive_pass_window_sec: float = 3.0  # widened for async I/O latency; was 2.0
 
     # 4. Unconfirmed delta TTL gate: when delta has no history above min_delta_pct
     #    in the last 20s or 30s (appeared suddenly), require this minimum TTL.
