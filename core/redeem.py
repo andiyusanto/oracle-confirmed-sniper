@@ -541,7 +541,7 @@ def _redeem_one(w3: Web3, wallet: str, pos: dict, nonce: int,
 _redeemed_cids: set[str] = set()   # session-level guard against double-redemption
 
 
-def redeem_all(force: bool = False) -> tuple[int, float]:
+def redeem_all(force: bool = False) -> tuple[int, float, list[str]]:
     """Redeem all resolved positions. Returns (count_redeemed, total_usdc_received).
 
     force=True skips the settlement buffer and on-chain oracle guard.
@@ -551,7 +551,7 @@ def redeem_all(force: bool = False) -> tuple[int, float]:
     """
     if not CFG.private_key:
         log.warning("Skipping redemption: POLY_PRIVATE_KEY not configured")
-        return 0, 0.0
+        return 0, 0.0, []
 
     # Priority 4: burn guard — hard exit on null/zero wallet
     wallet = _guard_address(CFG.funder_address, "redeem_all")
@@ -559,7 +559,7 @@ def redeem_all(force: bool = False) -> tuple[int, float]:
     positions = _fetch_redeemable_positions()
     if not positions:
         log.info("No positions to redeem")
-        return 0, 0.0
+        return 0, 0.0, []
 
     # Filter positions already redeemed this session — Data API can lag
     # and return the same position again before on-chain state propagates.
@@ -576,17 +576,18 @@ def redeem_all(force: bool = False) -> tuple[int, float]:
     positions = filtered
     if not positions:
         log.info("No positions to redeem")
-        return 0, 0.0
+        return 0, 0.0, []
 
     log.info("Found %d redeemable position(s)", len(positions))
 
     w3 = _connect()
     if not w3:
         log.error("Cannot connect to Polygon RPC — skipping redemption")
-        return 0, 0.0
+        return 0, 0.0, []
 
-    redeemed   = 0
-    total_usdc = 0.0
+    redeemed        = 0
+    total_usdc      = 0.0
+    confirmed_losses: list[str] = []
     # Fetch nonce once, increment locally to avoid mempool collisions
     nonce      = w3.eth.get_transaction_count(wallet, "pending")
     gas_price  = w3.eth.gas_price
@@ -606,6 +607,7 @@ def redeem_all(force: bool = False) -> tuple[int, float]:
             # Add to session skip-set so future periodic scans don't waste
             # an RPC call re-checking this position every 15 minutes.
             _redeemed_cids.add(cid)
+            confirmed_losses.append(cid)
             log.info("[SKIP] Confirmed LOSS added to skip-set: %s", cid[:18])
         # Advance nonce ONLY if a tx reached the mempool — oracle-blocked
         # positions never submit, so their nonce slot must not be consumed.
@@ -616,10 +618,10 @@ def redeem_all(force: bool = False) -> tuple[int, float]:
         "Redemption complete: %d/%d positions ($%.4f USDC.e actual on-chain)",
         redeemed, len(positions), total_usdc,
     )
-    return redeemed, total_usdc
+    return redeemed, total_usdc, confirmed_losses
 
 
-async def redeem_all_async(force: bool = False) -> tuple[int, float]:
+async def redeem_all_async(force: bool = False) -> tuple[int, float, list[str]]:
     """Async wrapper — runs redeem_all() in a thread pool."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: redeem_all(force=force))

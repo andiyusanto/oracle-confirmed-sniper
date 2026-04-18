@@ -219,10 +219,11 @@ class HybridEngine:
                 asset, oracle_says, price, edge_pct, min_edge,
                 fair_value, delta, ttl,
             )
-            # Soft block: only hard-reject when edge is deeply negative.
-            # edge ≥ -3%: proceed — fv model uncertainty covers this gap.
-            # edge < -3%: market is clearly overpriced vs our model, skip.
-            if edge_pct < -3.0:
+            # Weak signals (delta < strong_delta_pct): hard-block at fee_edge.
+            # These have insufficient directional conviction to overcome fees.
+            # Strong/Extreme signals: soft block — only reject when deeply negative.
+            is_weak = abs_delta < CFG.strong_delta_pct
+            if is_weak or edge_pct < -3.0:
                 return None
 
         # ── Position sizing ───────────────────────────────────────

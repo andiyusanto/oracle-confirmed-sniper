@@ -39,27 +39,59 @@ class Database:
                 fair_value REAL DEFAULT 0,
                 binance_price REAL DEFAULT 0,
                 chainlink_price REAL DEFAULT 0,
-                opening_price REAL DEFAULT 0
+                opening_price REAL DEFAULT 0,
+                condition_id TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
             CREATE INDEX IF NOT EXISTS idx_trades_opened ON trades(opened_at);
             CREATE INDEX IF NOT EXISTS idx_trades_window ON trades(window_ts);
         """)
-        self.conn.commit()
+        # Migration: add condition_id to existing DBs that predate this column
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN condition_id TEXT DEFAULT ''")
+            self.conn.commit()
+        except Exception:
+            pass  # column already exists
 
     def save_trade(self, t: Trade):
         with self._lock:
             self.conn.execute("""
                 INSERT OR REPLACE INTO trades VALUES (
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
                 )""", (
                 t.id, t.asset, t.direction, t.side, t.entry_price,
                 t.size_usdc, t.oracle_delta, t.confidence, t.pnl,
                 t.status, t.mode, t.opened_at, t.closed_at,
                 t.window_ts, t.time_remaining, t.fair_value,
                 t.binance_price, t.chainlink_price, t.opening_price,
+                getattr(t, 'condition_id', ''),
             ))
             self.conn.commit()
+
+    def correct_trade_to_loss(self, condition_id: str) -> bool:
+        """Correct a false-WIN trade to LOSS when oracle confirms we lost.
+
+        Returns True if a matching EXPIRED trade was found and updated.
+        """
+        if not condition_id:
+            return False
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT id, size_usdc FROM trades "
+                "WHERE condition_id=? AND status='EXPIRED' AND pnl > 0",
+                (condition_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            trade_id, size_usdc = row
+            true_loss = round(-size_usdc, 6)
+            self.conn.execute(
+                "UPDATE trades SET pnl=?, status='EXPIRED' WHERE id=?",
+                (true_loss, trade_id)
+            )
+            self.conn.commit()
+            return True
 
     def close_trade(self, tid: str, pnl: float, status: str = "EXPIRED"):
         with self._lock:

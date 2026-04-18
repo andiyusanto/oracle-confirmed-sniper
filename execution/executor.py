@@ -193,6 +193,7 @@ class Executor:
             opening_price=signal.oracle.opening_price,
             # Bug 1 fix: store actual window length (5m=300, 15m=900)
             duration_sec=int(signal.token.end_ts - signal.token.window_ts),
+            condition_id=signal.token.conditionId,
         )
 
         if self.is_live:

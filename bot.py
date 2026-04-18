@@ -156,7 +156,10 @@ async def run(is_live: bool, portfolio: float):
     # while the bot was offline (crash, restart, manual stop).
     if is_live:
         log.info("Startup: scanning for unredeemed winning positions...")
-        _s_count, _s_usdc = await redeem.redeem_all_async()
+        _s_count, _s_usdc, _s_losses = await redeem.redeem_all_async()
+        for _cid in _s_losses:
+            if db.correct_trade_to_loss(_cid):
+                log.info("Startup: corrected false-WIN to LOSS for conditionId=%s", _cid[:18])
         if _s_usdc > 0:
             executor.sync_balance()
             await telegram.notify_redeemed(_s_count, _s_usdc)
@@ -261,7 +264,10 @@ async def run(is_live: bool, portfolio: float):
                         # Sync periodic timer so the two callers don't double-fire
                         # when their intervals happen to align on the same cycle.
                         _last_periodic_redeem_ts = now
-                        count, total_usdc = await redeem.redeem_all_async()
+                        count, total_usdc, lost_cids = await redeem.redeem_all_async()
+                        for _cid in lost_cids:
+                            if db.correct_trade_to_loss(_cid):
+                                log.info("Corrected false-WIN to LOSS: conditionId=%s", _cid[:18])
                         if count > 0:
                             loop = asyncio.get_running_loop()
                             await loop.run_in_executor(None, executor.sync_balance)
@@ -287,7 +293,10 @@ async def run(is_live: bool, portfolio: float):
                     _last_periodic_redeem_ts = now
                     # Sync retry timer so pending queue doesn't also fire this cycle
                     _last_redeem_attempt_ts = now
-                    p_count, p_usdc = await redeem.redeem_all_async()
+                    p_count, p_usdc, p_losses = await redeem.redeem_all_async()
+                    for _cid in p_losses:
+                        if db.correct_trade_to_loss(_cid):
+                            log.info("Periodic: corrected false-WIN to LOSS: conditionId=%s", _cid[:18])
                     if p_usdc > 0:
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, executor.sync_balance)

@@ -48,7 +48,7 @@ class Config:
     snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 55.0    # strong delta entry
     snipe_entry_weak: float = 35.0      # weak delta entry — widened from 25s; was 25.0
-    snipe_exit_sec: float = 10.0        # stop at T-10s — widened from 16s; adds 6s to all entry windows
+    snipe_exit_sec: float = 25.0        # minimum TTL at entry — signals below 25s are noise at expiry
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
     min_delta_pct: float = 0.015        # restored: 0.025 was too strict, cut 40% of opportunities
