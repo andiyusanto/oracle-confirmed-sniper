@@ -50,8 +50,10 @@ class Database:
         try:
             self.conn.execute("ALTER TABLE trades ADD COLUMN condition_id TEXT DEFAULT ''")
             self.conn.commit()
-        except Exception:
-            pass  # column already exists
+        except Exception as _e:
+            if "duplicate column" not in str(_e).lower():
+                import logging as _log
+                _log.getLogger("hybrid.db").warning("condition_id migration failed: %s", _e)
 
     def save_trade(self, t: Trade):
         with self._lock:
