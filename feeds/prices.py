@@ -247,18 +247,22 @@ class PriceFeeds:
                 ) as ws:
                     log.info("RTDS connected: %s", CFG.rtds_url)
                     self._rtds_last_msg_ts = time.time()
-                    # crypto_prices (Binance proxy): symbol format "btcusdt"
-                    bn_filters = ",".join(a.lower() + "usdt" for a in CFG.assets)
-                    # crypto_prices_chainlink: symbol format "btc/usd" (confirmed via RTDS sniff)
-                    cl_filters = ",".join(a.lower() + "/usd" for a in CFG.assets)
+                    # Must send as separate ws.send() calls with empty filters.
+                    # Combining into one message or using asset filters silently kills delivery.
+                    # CL symbols: "btc/usd", "eth/usd", "sol/usd" — parser handles filtering.
+                    # BN symbols: "btcusdt", "ethusdt", "solusdt" — parser handles filtering.
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [
                             {"topic": "crypto_prices_chainlink",
-                             "type": "update", "filters": cl_filters},
+                             "type": "update", "filters": ""}
+                        ]
+                    }))
+                    await ws.send(json.dumps({
+                        "action": "subscribe",
+                        "subscriptions": [
                             {"topic": "crypto_prices",
-                             "type": "update",
-                             "filters": bn_filters},
+                             "type": "update", "filters": ""}
                         ]
                     }))
                     while self._running:
