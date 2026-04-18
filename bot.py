@@ -186,11 +186,33 @@ async def run(is_live: bool, portfolio: float):
     # iteration — startup scan above already covered any pending positions.
     _PERIODIC_REDEEM_INTERVAL = 900.0     # scan every 15 min unconditionally
     _last_periodic_redeem_ts: float = time.time()
+    _last_status_log_ts: float = 0.0
+    _STATUS_LOG_INTERVAL = 60.0  # log oracle status every 60s
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
             while True:
                 now = time.time()
+
+                # Periodic oracle/market status log — diagnose why trades aren't firing
+                if now - _last_status_log_ts >= _STATUS_LOG_INTERVAL:
+                    _last_status_log_ts = now
+                    for a in CFG.assets:
+                        cl_stale = feeds.chainlink_staleness(a)
+                        delta_vals = []
+                        for wts, op in feeds.openings.get(a, {}).items():
+                            if op > 0:
+                                cur = feeds.best_price(a)
+                                if cur > 0:
+                                    d = (cur - op) / op * 100
+                                    delta_vals.append(f"{d:+.4f}%")
+                        delta_str = ", ".join(delta_vals) if delta_vals else "no openings"
+                        log.info(
+                            "STATUS %s: CL=$%.2f stale=%.0fs markets=%d deltas=[%s] signals=%d/%d",
+                            a, feeds.chainlink[a], cl_stale,
+                            len(markets.tokens), delta_str,
+                            dash.signals_fired, dash.signals_seen,
+                        )
 
                 # Rediscover markets periodically
                 if markets.needs_refresh():

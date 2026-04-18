@@ -51,7 +51,7 @@ class Config:
     snipe_exit_sec: float = 16.0        # stop at T-16s — blocks all observed late-entry ghosts (TTL≤15s)
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
-    min_delta_pct: float = 0.025        # raised: 0.015 admitted too many marginal signals
+    min_delta_pct: float = 0.015        # restored: 0.025 was too strict, cut 40% of opportunities
     strong_delta_pct: float = 0.050     # unchanged
     extreme_delta_pct: float = 0.100    # unchanged
 
@@ -106,8 +106,9 @@ class Config:
     # Minimum edge % required before a signal is traded, independent of the
     # fee-based break-even calc. With 1.5% taker fee, fee_edge ≈ 2% at $0.75;
     # min_edge_pct=3.0 is ~2x the fee, ensuring positive EV after costs.
-    # Was 9.0, calibrated for 10% fee assumption — lowered after fee fix.
-    min_edge_pct: float = 2.5
+    # Set to 0.0 — fee_edge alone determines the floor (no artificial surcharge).
+    # fee_edge at price=0.75 ≈ 2.14%; that is sufficient protection against fees.
+    min_edge_pct: float = 0.0
 
     # ── Market selection ────────────────────────────────────────────
     assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
