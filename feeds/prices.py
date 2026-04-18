@@ -247,17 +247,18 @@ class PriceFeeds:
                 ) as ws:
                     log.info("RTDS connected: %s", CFG.rtds_url)
                     self._rtds_last_msg_ts = time.time()
-                    rtds_filters = ",".join(
-                        a.lower() + "usdt" for a in CFG.assets
-                    )
+                    # crypto_prices (Binance proxy): symbol format "btcusdt"
+                    bn_filters = ",".join(a.lower() + "usdt" for a in CFG.assets)
+                    # crypto_prices_chainlink: symbol format "btc/usd" (confirmed via RTDS sniff)
+                    cl_filters = ",".join(a.lower() + "/usd" for a in CFG.assets)
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [
                             {"topic": "crypto_prices_chainlink",
-                             "type": "update", "filters": ""},
+                             "type": "update", "filters": cl_filters},
                             {"topic": "crypto_prices",
                              "type": "update",
-                             "filters": rtds_filters},
+                             "filters": bn_filters},
                         ]
                     }))
                     while self._running:
@@ -331,6 +332,7 @@ class PriceFeeds:
             return
         fval = float(value)
         if topic == "crypto_prices_chainlink":
+            log.info("CL feed: %s=$%.2f", asset, fval)
             self.chainlink[asset] = fval
             self.cl_ts[asset] = time.time()
             self._record_price(asset, fval)

@@ -78,14 +78,14 @@ class HybridEngine:
             return None
 
         # ── GATE 3.5: Chainlink staleness hard gate ───────────────
-        # If CL data is stale AND we still have >15s TTL, the delta direction
-        # is based on an outdated oracle price — too uncertain to trade.
-        # At TTL ≤ 15s the window is nearly done; staleness is less risky.
+        # Block only when BOTH CL and Binance are stale — if Binance is fresh,
+        # best_price() falls back to it and we're not flying blind.
         stale = self.feeds.chainlink_staleness(asset)
-        if stale > CFG.cl_staleness_hard_sec and ttl > 15.0:
-            log.debug(
-                "STALE SKIP %s: CL data %.0fs old (limit %.0fs), ttl=%.0fs",
-                asset, stale, CFG.cl_staleness_hard_sec, ttl,
+        bn_stale = time.time() - self.feeds.bn_ts.get(asset, 0)
+        if stale > CFG.cl_staleness_hard_sec and bn_stale > 30.0:
+            log.info(
+                "STALE SKIP %s: CL=%.0fs old, BN=%.0fs old — both feeds stale, ttl=%.0fs",
+                asset, stale, bn_stale, ttl,
             )
             return None
 

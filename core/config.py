@@ -51,13 +51,13 @@ class Config:
     snipe_exit_sec: float = 25.0        # minimum TTL at entry — signals below 25s are noise at expiry
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
-    min_delta_pct: float = 0.015        # restored: 0.025 was too strict, cut 40% of opportunities
+    min_delta_pct: float = 0.012        # lowered: captures 0.013-0.014% near-misses seen in flat markets
     strong_delta_pct: float = 0.050     # unchanged
     extreme_delta_pct: float = 0.100    # unchanged
 
     # ── Token price range ───────────────────────────────────────────
     min_token_price: float = 0.55       # keep aggressive for volume
-    max_token_price: float = 0.95
+    max_token_price: float = 0.82       # lowered: 0.85-0.95 tokens earn only +8% ROI vs +60% for cheaper tokens
 
     # ── Oracle source ────────────────────────────────────────────────
     # Require Binance to agree with Chainlink direction before trading.
