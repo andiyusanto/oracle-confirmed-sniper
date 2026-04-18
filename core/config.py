@@ -48,7 +48,7 @@ class Config:
     snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 55.0    # strong delta entry
     snipe_entry_weak: float = 35.0      # weak delta entry — widened from 25s; was 25.0
-    snipe_exit_sec: float = 16.0        # stop at T-16s — blocks all observed late-entry ghosts (TTL≤15s)
+    snipe_exit_sec: float = 10.0        # stop at T-10s — widened from 16s; adds 6s to all entry windows
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
     min_delta_pct: float = 0.015        # restored: 0.025 was too strict, cut 40% of opportunities
@@ -127,7 +127,7 @@ class Config:
     # 4. Unconfirmed delta TTL gate: when delta has no history above min_delta_pct
     #    in the last 20s or 30s (appeared suddenly), require this minimum TTL.
     #    Prevents late-entry ghost: transient CL spike resolves before CTF settlement.
-    min_ttl_unconfirmed_sec: float = 20.0
+    min_ttl_unconfirmed_sec: float = 10.0
 
     # ── Live exit on oracle reversal ─────────────────────────────────────
     # After a fill, if oracle delta reverses and holds for exit_reversal_hold_sec,

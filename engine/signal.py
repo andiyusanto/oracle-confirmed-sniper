@@ -37,6 +37,8 @@ class HybridEngine:
         self._asset_fill_ts: dict[str, float] = {}   # asset → last fill timestamp
         # Consecutive-pass gate: token_id → timestamp of first pass
         self._first_pass_ts: dict[str, float] = {}
+        # Rate-limited gate-3 diagnostic log: asset → last log timestamp
+        self._gate3_log_ts: dict[str, float] = {}
 
     def evaluate(self, token: Token, portfolio: float,
                  is_live: bool = False) -> Optional[Signal]:
@@ -62,6 +64,17 @@ class HybridEngine:
         delta = self.feeds.oracle_delta(asset, token.window_ts)
         abs_delta = abs(delta)
         if abs_delta < CFG.min_delta_pct:
+            # Rate-limited diagnostic (once per 60s per asset) — lets operator
+            # distinguish "no opening captured" (delta=0) from "delta too small"
+            last_g3 = self._gate3_log_ts.get(asset, 0.0)
+            if now - last_g3 >= 60.0:
+                self._gate3_log_ts[asset] = now
+                has_opening = bool(self.feeds.openings.get(asset, {}).get(token.window_ts))
+                log.info(
+                    "GATE3 SKIP %s: delta=%.4f%% < min=%.4f%% "
+                    "(opening_captured=%s ttl=%.0fs)",
+                    asset, delta, CFG.min_delta_pct, has_opening, ttl,
+                )
             return None
 
         # ── GATE 3.5: Chainlink staleness hard gate ───────────────
@@ -114,12 +127,12 @@ class HybridEngine:
                 return None
 
         # c) Heavy fade check — weak + strong signals only.
-        #    Block if current |delta| has fallen >20% from 20s-ago value.
-        #    Natural oscillation (±20%) is allowed; genuine collapse is not.
-        #    Extreme signals can ride larger retracements.
+        #    Block if current |delta| has fallen >50% from 20s-ago value.
+        #    Threshold lowered from 80%→50% — small deltas oscillate naturally;
+        #    only block genuine collapses (>50% fade), not normal noise.
         if abs_delta < CFG.extreme_delta_pct:
             if past_delta_20 != 0.0 and abs(past_delta_20) >= CFG.min_delta_pct:
-                if abs_delta < abs(past_delta_20) * 0.80:
+                if abs_delta < abs(past_delta_20) * 0.50:
                     log.debug(
                         "MOMENTUM SKIP %s: delta fading >20%% (was %.4f%%, now %.4f%%)",
                         asset, past_delta_20, delta,
@@ -206,7 +219,11 @@ class HybridEngine:
                 asset, oracle_says, price, edge_pct, min_edge,
                 fair_value, delta, ttl,
             )
-            return None
+            # Soft block: only hard-reject when edge is deeply negative.
+            # edge ≥ -3%: proceed — fv model uncertainty covers this gap.
+            # edge < -3%: market is clearly overpriced vs our model, skip.
+            if edge_pct < -3.0:
+                return None
 
         # ── Position sizing ───────────────────────────────────────
         size = self._compute_size(price, edge_pct, portfolio, is_live)
