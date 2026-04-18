@@ -336,7 +336,7 @@ class PriceFeeds:
             return
         fval = float(value)
         if topic == "crypto_prices_chainlink":
-            log.info("CL feed: %s=$%.2f", asset, fval)
+            log.debug("CL feed: %s=$%.2f", asset, fval)
             self.chainlink[asset] = fval
             self.cl_ts[asset] = time.time()
             self._record_price(asset, fval)
