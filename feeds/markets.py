@@ -277,13 +277,10 @@ class MarketDiscovery:
                         conditionId=cid,
                     )
 
-                    # Pass opening price from Gamma to PriceFeeds
-                    # outcomePrices at discovery time approximates the
-                    # market's initial pricing for this window
-                    if self._price_feeds and direction == "UP" and price > 0:
-                        # The UP token price ~ market's implied probability
-                        # Opening price for the underlying asset comes from
-                        # the feed, but we can signal that this window exists
+                    # Trigger opening price capture for any token in this window.
+                    # Previously UP-only, which meant windows discovered via a DOWN
+                    # token first (rare but possible) never got an opening captured.
+                    if self._price_feeds:
                         self._price_feeds.capture_opening(asset, wts)
 
         except asyncio.TimeoutError:

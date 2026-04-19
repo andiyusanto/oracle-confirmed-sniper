@@ -211,6 +211,23 @@ class HybridEngine:
         binance_agrees = self.feeds.binance_agrees(asset, oracle_says,
                                                    token.window_ts)
 
+        # ── GATE 5c: Hard Binance gate for weak signals ───────────
+        # Strong/extreme delta (≥ 0.05%) carry enough conviction that
+        # Binance lag or brief disagreement doesn't invalidate the signal.
+        # Weak signals (0.012–0.050%) have marginal conviction: if Binance
+        # is current (< 30s) and disagrees with the oracle direction, the
+        # two sources are in conflict — skip rather than guess.
+        bn_age = time.time() - self.feeds.bn_ts.get(asset, 0)
+        if (not binance_agrees
+                and bn_age < 30.0
+                and abs_delta < CFG.strong_delta_pct):
+            log.debug(
+                "BINANCE HARD GATE %s: weak delta=%.4f%% but Binance disagrees "
+                "(bn_age=%.0fs) — skipping",
+                asset, delta, bn_age,
+            )
+            return None
+
         # ── GATE 6: Token price in range ──────────────────────────
         price = token.book_price
         if price < CFG.min_token_price or price > CFG.max_token_price:

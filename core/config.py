@@ -47,7 +47,7 @@ class Config:
     oracle_watch_sec: float = 120.0     # start watching at T-120s
     snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
     snipe_entry_strong: float = 55.0    # strong delta entry
-    snipe_entry_weak: float = 35.0      # weak delta entry — widened from 25s; was 25.0
+    snipe_entry_weak: float = 40.0      # weak delta entry — widened from 35s; was 25.0
     snipe_exit_sec: float = 25.0        # minimum TTL at entry — signals below 25s are noise at expiry
 
     # ── Oracle thresholds (slightly tightened) ──────────────────────
@@ -132,7 +132,7 @@ class Config:
     cl_staleness_hard_sec: float = 30.0  # raised: aligns with best_price() 30s threshold; was 15.0
 
     # 2. Spread gate: skip tokens with wide bid-ask spread (thin/uncertain market)
-    max_spread_pct: float = 0.20         # max spread as fraction of mid (0.20 = 20%)
+    max_spread_pct: float = 0.12         # tightened from 0.20 — wide spread = signal already priced in or thin book
 
     # 3. Consecutive pass: signal must pass all gates twice before firing
     consecutive_pass_window_sec: float = 3.0  # widened for async I/O latency; was 2.0
