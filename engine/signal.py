@@ -167,10 +167,41 @@ class HybridEngine:
         else:
             max_entry_sec = CFG.snipe_entry_weak        # T-25s
 
-        if ttl > max_entry_sec or ttl < CFG.snipe_exit_sec:
+        # UP: block outside [snipe_exit_sec, max_entry_sec]
+        # DOWN: TTL floor is handled in GATE 4b (down_snipe_exit_sec is lower)
+        if ttl > max_entry_sec:
             return None
+        if ttl < CFG.snipe_exit_sec:
+            # Might still be a valid late DOWN entry — defer floor check to GATE 4b
+            oracle_says_peek = "UP" if delta > 0 else "DOWN"
+            if oracle_says_peek != "DOWN" or not CFG.allow_down_direction:
+                return None
 
         oracle_says = "UP" if delta > 0 else "DOWN"
+
+        # ── GATE 4b: DOWN strict filter ───────────────────────────
+        # DOWN trades require all three conditions before firing:
+        #   1. delta ≥ 0.10% (extreme tier — weaker DOWN signals reverse too easily)
+        #   2. All assets trending DOWN together (broad market move, not single noise)
+        #   3. TTL ≤ 35s (late entry — minimal time for oracle signal to reverse)
+        # snipe_exit_sec (25s) is overridden by down_snipe_exit_sec (10s) here
+        # so late DOWN entries can pass through.
+        if oracle_says == "DOWN":
+            if not CFG.allow_down_direction:
+                return None
+            if abs_delta < CFG.down_min_delta_pct:
+                log.debug("DOWN SKIP %s: delta=%.4f%% < down_min=%.4f%%",
+                          asset, delta, CFG.down_min_delta_pct)
+                return None
+            if not self.feeds.all_assets_trending_down(CFG.assets,
+                                                        CFG.down_min_delta_pct):
+                log.debug("DOWN SKIP %s: not all assets trending DOWN (single-asset noise)",
+                          asset)
+                return None
+            if ttl > CFG.down_snipe_entry_sec or ttl < CFG.down_snipe_exit_sec:
+                log.debug("DOWN SKIP %s: ttl=%.0fs outside DOWN window [%.0fs, %.0fs]",
+                          asset, ttl, CFG.down_snipe_exit_sec, CFG.down_snipe_entry_sec)
+                return None
 
         # ── GATE 5: Oracle must agree with token direction ────────
         if oracle_says != token.direction:

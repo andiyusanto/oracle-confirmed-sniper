@@ -59,6 +59,19 @@ class Config:
     min_token_price: float = 0.55       # keep aggressive for volume
     max_token_price: float = 0.82       # lowered: 0.85-0.95 tokens earn only +8% ROI vs +60% for cheaper tokens
 
+    # ── Direction filter ─────────────────────────────────────────────
+    # DOWN trades require all three strict conditions (data-driven):
+    #   1. delta ≥ down_min_delta_pct (extreme tier only — 0.10%)
+    #   2. All configured assets trending DOWN simultaneously (broad move, not noise)
+    #   3. TTL ≤ down_snipe_entry_sec (late entry — limited reversal time)
+    # Set allow_down_direction=False to run UP-only mode.
+    allow_down_direction: bool = True
+
+    # DOWN condition thresholds
+    down_min_delta_pct: float = 0.10     # minimum |delta| for DOWN (extreme tier)
+    down_snipe_entry_sec: float = 35.0   # DOWN: only enter when TTL ≤ 35s
+    down_snipe_exit_sec: float = 10.0    # DOWN: minimum TTL at entry
+
     # ── Oracle source ────────────────────────────────────────────────
     # Require Binance to agree with Chainlink direction before trading.
     # Both sources must show the same direction (UP/DOWN) vs window open.

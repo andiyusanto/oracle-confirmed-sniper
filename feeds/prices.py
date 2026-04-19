@@ -165,6 +165,23 @@ class PriceFeeds:
             return 0.0
         return (current - opening) / opening * 100
 
+    def all_assets_trending_down(self, assets: list[str],
+                                  min_delta_pct: float = 0.0) -> bool:
+        """True if every asset currently has a negative oracle delta.
+
+        Uses each asset's most recent registered opening window.
+        Returns False if any asset has no opening captured yet.
+        """
+        for a in assets:
+            openings = self.openings.get(a, {})
+            if not openings:
+                return False
+            latest_window = max(openings.keys())
+            delta = self.oracle_delta(a, latest_window)
+            if delta >= -min_delta_pct:
+                return False
+        return True
+
     def oracle_delta_at(self, asset: str, window_ts: int,
                         lookback_sec: float) -> float:
         """Signed % delta at a past point vs the same window's opening price.
