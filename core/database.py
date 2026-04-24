@@ -70,30 +70,32 @@ class Database:
             ))
             self.conn.commit()
 
-    def correct_trade_to_loss(self, condition_id: str) -> bool:
+    def correct_trade_to_loss(self, condition_id: str) -> Optional[float]:
         """Correct a false-WIN trade to LOSS when oracle confirms we lost.
 
-        Returns True if a matching EXPIRED trade was found and updated.
+        Returns the pnl delta (negative float) if a correction was made,
+        or None if no matching trade was found. The caller should apply
+        this delta to the in-memory portfolio tracker for in-session corrections.
         """
         if not condition_id:
-            return False
+            return None
         with self._lock:
             cur = self.conn.execute(
-                "SELECT id, size_usdc FROM trades "
+                "SELECT id, size_usdc, pnl FROM trades "
                 "WHERE condition_id=? AND status='EXPIRED' AND pnl > 0",
                 (condition_id,)
             )
             row = cur.fetchone()
             if not row:
-                return False
-            trade_id, size_usdc = row
+                return None
+            trade_id, size_usdc, original_pnl = row
             true_loss = round(-size_usdc, 6)
             self.conn.execute(
                 "UPDATE trades SET pnl=?, status='EXPIRED' WHERE id=?",
                 (true_loss, trade_id)
             )
             self.conn.commit()
-            return True
+            return round(true_loss - original_pnl, 6)
 
     def close_trade(self, tid: str, pnl: float, status: str = "EXPIRED"):
         with self._lock:

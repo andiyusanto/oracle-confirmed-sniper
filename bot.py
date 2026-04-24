@@ -158,7 +158,8 @@ async def run(is_live: bool, portfolio: float):
         log.info("Startup: scanning for unredeemed winning positions...")
         _s_count, _s_usdc, _s_losses = await redeem.redeem_all_async()
         for _cid in _s_losses:
-            if db.correct_trade_to_loss(_cid):
+            # Startup: wallet balance already reflects these losses — no portfolio adjustment.
+            if db.correct_trade_to_loss(_cid) is not None:
                 log.info("Startup: corrected false-WIN to LOSS for conditionId=%s", _cid[:18])
         if _s_usdc > 0:
             executor.sync_balance()
@@ -266,8 +267,14 @@ async def run(is_live: bool, portfolio: float):
                         _last_periodic_redeem_ts = now
                         count, total_usdc, lost_cids = await redeem.redeem_all_async()
                         for _cid in lost_cids:
-                            if db.correct_trade_to_loss(_cid):
-                                log.info("Corrected false-WIN to LOSS: conditionId=%s", _cid[:18])
+                            _pnl_delta = db.correct_trade_to_loss(_cid)
+                            if _pnl_delta is not None:
+                                risk.update_portfolio(_pnl_delta)
+                                log.info(
+                                    "Corrected false-WIN to LOSS: conditionId=%s "
+                                    "(portfolio adjusted $%+.4f → $%.2f)",
+                                    _cid[:18], _pnl_delta, risk.portfolio,
+                                )
                         if count > 0:
                             loop = asyncio.get_running_loop()
                             await loop.run_in_executor(None, executor.sync_balance)
@@ -295,8 +302,14 @@ async def run(is_live: bool, portfolio: float):
                     _last_redeem_attempt_ts = now
                     p_count, p_usdc, p_losses = await redeem.redeem_all_async()
                     for _cid in p_losses:
-                        if db.correct_trade_to_loss(_cid):
-                            log.info("Periodic: corrected false-WIN to LOSS: conditionId=%s", _cid[:18])
+                        _pnl_delta = db.correct_trade_to_loss(_cid)
+                        if _pnl_delta is not None:
+                            risk.update_portfolio(_pnl_delta)
+                            log.info(
+                                "Periodic: corrected false-WIN to LOSS: conditionId=%s "
+                                "(portfolio adjusted $%+.4f → $%.2f)",
+                                _cid[:18], _pnl_delta, risk.portfolio,
+                            )
                     if p_usdc > 0:
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, executor.sync_balance)
