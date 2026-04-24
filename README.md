@@ -95,14 +95,37 @@ The bot exploits a structural edge: Chainlink oracle prices resolve Polymarket's
 
 | Phase | Window | Action |
 |---|---|---|
-| 1 — Oracle watch | T-120s to T-60s | Monitor Chainlink delta vs. opening price; build conviction |
-| 2 — Snipe execution | T-60s to T-3s | If oracle confirms AND token is in range → execute |
+| 1 — Oracle watch | T-120s to T-75s | Monitor Chainlink delta vs. opening price; build conviction |
+| 2 — Snipe execution | T-75s to T-16s | If oracle confirms AND token is in range → execute |
 
 **All conditions must be true to trade:**
-1. Time remaining is within the snipe window (T-60s to T-3s, tiered by delta strength)
-2. Chainlink oracle has moved at least `min_delta_pct` from the window's opening price
-3. Token price is in the range $0.55–$0.95 (market partially agrees, room for profit)
-4. Combined confidence score exceeds threshold
+1. Current UTC hour is NOT in blackout set `{0, 2, 6, 7, 17}` — market-open volatility windows
+2. Oracle direction is UP — DOWN signals are anti-predictive in bull conditions (WR=11.1%)
+3. Time remaining is within the snipe window (tiered by delta strength: T-75s / T-55s / T-40s)
+4. Chainlink oracle has moved at least `min_delta_pct` from the window's opening price
+5. Binance agrees with Chainlink direction (dual-source confirmation)
+6. Token YES price is in the range $0.55–$0.67 — above $0.67 the payoff math is negative-EV
+7. Combined confidence score exceeds threshold AND computed edge ≥ 6%
+
+**Why $0.67 is the structural ceiling:**
+
+At each entry price, the payout ratio b = (1 − entry) / entry × (1 − fee). The breakeven win rate is 1/(1+b). With avg loss = full stake:
+
+| Entry | b (payout) | Breakeven WR | Strategy WR | Verdict |
+|-------|-----------|-------------|-------------|---------|
+| $0.60 | 0.657 | 60.3% | 76.0% | +15.7pp edge |
+| $0.67 | 0.477 | 67.7% | 76.0% | +8.3pp edge |
+| $0.70 | 0.414 | 70.7% | ~61% | Negative EV |
+| $0.75 | 0.333 | 75.0% | ~61% | Structural loss |
+
+**Why UTC blackout hours matter:**
+
+During market-open windows, Chainlink fires sharp spikes that revert before CTF binary settlement. Same trade count, completely opposite outcomes from live data (n=38 each):
+
+| Group | WR | Profit Factor | Net / 5.5 days |
+|-------|-----|-------------|----------------|
+| Bad hours {0, 2, 6, 7, 17} | 44.7% | 0.266 | −$64.11 |
+| Good hours (all others) | **86.8%** | **3.130** | **+$38.59** |
 
 ## Execution Model — Taker vs Maker
 
@@ -210,22 +233,6 @@ Signal fires at T-32s
 
 ---
 
-### Known Issue — Fee Accounting Mismatch
-
-`use_maker = True` in `core/config.py` causes the bot to record P&L using the maker rebate
-(+0.20%) instead of the actual taker fee (-1.80%). This does **not** affect execution, but it
-overstates recorded P&L by ~2.0% per trade.
-
-```
-Actual cost per $6 trade:   -$0.108  (1.80% taker fee)
-Bot records per $6 trade:   +$0.012  (0.20% maker rebate)
-                             ───────
-P&L overcount per trade:    +$0.120
-```
-
-To fix, set `use_maker = False` in `core/config.py` — execution behavior is unchanged, only
-the fee math in `_compute_pnl()` is corrected.
-
 ---
 
 ## Confidence Scoring
@@ -236,8 +243,20 @@ Scores combine four components (max 100):
 |---|---|---|
 | Delta score | 40 | How far oracle moved from window open |
 | Time score | 30 | Less time remaining = outcome more certain |
-| Price score | 20 | Higher token price = stronger market agreement |
+| Price score | 20 | **Lower** token price = higher payoff ratio = more valuable |
 | Freshness score | 10 | Chainlink data staleness |
+
+Price score is **inverted** relative to the naive "high price = market agrees" intuition:
+
+| Entry price | Price score | Reasoning |
+|------------|-------------|-----------|
+| < $0.58 | 20 pts | b ≥ 0.72, breakeven 58% — best payoff |
+| < $0.62 | 15 pts | b ≥ 0.61, strong edge room |
+| < $0.65 | 10 pts | b ≥ 0.54, above breakeven |
+| < $0.68 | 5 pts | b ≥ 0.47, marginal |
+| ≥ $0.68 | 2 pts | Approaching negative-EV territory |
+
+High-price tokens had the original scoring backwards — a $0.90 token was awarded 20 pts despite needing >90% WR to break even.
 
 ## Project Structure
 
@@ -533,55 +552,65 @@ tmux kill-session -t bot       # stop everything
 ## Key Parameters (`core/config.py`)
 
 ### Timing
-| Parameter | Default | Description |
+| Parameter | Value | Description |
 |---|---|---|
-| `snipe_entry_sec` | 60s | Max entry window for extreme delta (T-60s) |
-| `snipe_entry_strong` | 45s | Max entry for strong delta (T-45s) |
-| `snipe_entry_weak` | 25s | Max entry for weak delta (T-25s) |
-| `snipe_exit_sec` | 3s | Stop entering at T-3s (fill time) |
 | `oracle_watch_sec` | 120s | Start watching oracle from T-120s |
+| `snipe_entry_sec` | 75s | Max entry window for extreme delta |
+| `snipe_entry_strong` | 55s | Max entry for strong delta |
+| `snipe_entry_weak` | 40s | Max entry for weak delta |
+| `snipe_exit_sec` | 16s | Minimum TTL at entry — TTL≤15s is ghost zone (3 confirmed cases) |
 
 ### Oracle thresholds
-| Parameter | Default | Description |
+| Parameter | Value | Description |
 |---|---|---|
-| `min_delta_pct` | 0.020% | Minimum delta to consider (~$13 at $67k BTC) |
+| `min_delta_pct` | 0.012% | Minimum delta to consider |
 | `strong_delta_pct` | 0.05% | Strong signal threshold |
 | `extreme_delta_pct` | 0.10% | Near-certain outcome threshold |
 
-### Token price range
-| Parameter | Default | Description |
+### Direction and price filter
+| Parameter | Value | Description |
 |---|---|---|
-| `min_token_price` | $0.55 | Don't buy below 55c (too risky) |
-| `max_token_price` | $0.95 | Don't buy above 95c (no room for profit) |
+| `allow_down_direction` | `False` | DOWN oracle WR=11.1% (anti-predictive in bull conditions) |
+| `min_token_price` | $0.55 | Floor — below $0.55 market confidence too low |
+| `max_token_price` | $0.67 | Ceiling — above $0.67 payoff math turns negative-EV |
+| `min_edge_pct` | 6.0% | Minimum computed edge before entering (≈3× the taker fee) |
+
+### UTC blackout hours
+```
+blackout_hours_utc = [0, 2, 6, 7, 17]
+```
+
+| UTC Hour | Local event | Why it's bad |
+|----------|-------------|--------------|
+| 00–02 UTC | Asia equity open (08:00–10:00 SGT) | Oracle spikes on HK/SG correlation, reverts before CTF settlement |
+| 06–07 UTC | EU pre-market + London/Frankfurt open | Same spike-reversion pattern |
+| 17 UTC | US midday (13:00 EST) | HFT activity peak creates volatility CTF doesn't track |
 
 ### Position sizing
-| Parameter | Default | Description |
+| Parameter | Value | Description |
 |---|---|---|
 | `max_position_pct` | 3% | Max position as % of portfolio |
 | `max_position_usdc` | $30 | Hard cap per trade |
-| `live_max_usdc` | $15 | Safety cap in live mode |
-| `min_shares` | 5 | Polymarket minimum order size (shares) |
+| `live_max_usdc` | $15 | Live mode safety cap |
+| `kelly_fraction` | 0.25 | Quarter-Kelly sizing |
+| `min_shares` | 5 | Polymarket minimum order |
 
-> `live_max_usdc` must be high enough that the computed size always produces ≥ `min_shares`. At the worst-case price of $0.95, 5 shares costs $4.75 — so any value above $5 is safe. $15 gives comfortable headroom across all price tiers.
+Size multiplier by entry price tier — **inverted from original**:
+- **$0.55–0.70** → **1.0×** (best payoff ratio b ≥ 0.46, most profitable tier)
+- **$0.70–0.85** → 0.9× (reduced — above optimal range)
+- **$0.85–0.95** → 0.5× (worst payoff ratio, minimal allocation)
 
-Size is scaled by entry price tier:
-- **$0.55–0.70** → 0.5× (higher risk, lower reward)
-- **$0.70–0.85** → 1.0× (standard)
-- **$0.85–0.95** → 1.3× (high confidence)
-
-Size is also scaled by edge magnitude:
-- **edge ≥ 10%** → 1.2×
-- **edge ≥ 5%** → 1.0×
-- **edge ≥ 2%** → 0.85×
-- **edge < 2%** → 0.7×
+With `max_token_price=0.67`, all live trades fall in the 1.0× tier at quarter-Kelly (3% of portfolio). At $140 capital this is $4.20/trade — the kill switch requires 5 consecutive losses to trigger.
 
 ### Risk management
-| Parameter | Default | Description |
+| Parameter | Value | Description |
 |---|---|---|
 | `kill_switch_drawdown_pct` | 15% | Hard stop for the day |
-| `max_daily_loss_pct` | 10% | Pause after 10% daily loss |
-| `max_daily_trades` | 288 | ~3 assets × 2 durations × 48 windows/day |
-| `max_concurrent_positions` | 9 | 3 assets × 3 max simultaneous per asset |
+| `max_daily_loss_pct` | 10% | Pause trading after 10% daily loss |
+| `max_daily_trades` | 50 | Safety cap (filter chain produces ~4.5/day) |
+| `max_concurrent_positions` | 6 | Reduced from 9 — cluster losses: 7 events, 6 in bad hours |
+| `consec_loss_limit` | 3 | Trigger 30-min lockout after 3 consecutive losses |
+| `consec_loss_lockout_min` | 30 | Lockout duration |
 
 ## Data
 
@@ -591,86 +620,79 @@ Trades are stored in `hybrid_trades.db` (SQLite). Logs are written to `hybrid.lo
 
 BTC, ETH and SOL on both 5-minute and 15-minute Polymarket prediction markets. Configurable in `core/config.py` via `assets` and `durations` — adding or removing any asset automatically updates all WebSocket subscriptions, market discovery slugs and price routing.
 
-## Performance Projections
+## Live Performance (115 Trades, Apr 18–23 2026)
 
-All projections assume the current config (`live_max_usdc = $15`, `max_position_usdc = $30`, maker rebate enabled, `require_binance_agrees = True`) with a $75 portfolio on BTC + ETH + SOL across 5-minute and 15-minute markets.
+All figures from in-sample filtering of 115 live EXPIRED trades. Expect 20–30% out-of-sample degradation.
+
+### Filter Chain Results
+
+| Filter applied | Trades | Win Rate | Profit Factor | Net / 5.5d |
+|---------------|--------|----------|--------------|-----------|
+| Baseline (all 115) | 115 | 61.7% | 0.634 | −$66.68 |
+| + direction=UP only | 106 | 66.0% | 0.762 | −$35.85 |
+| + price ≤ $0.67 | 35 | 65.7% | 1.207 | +$8.43 |
+| **+ blackout {0,2,6,7,17}** | **25** | **76.0%** | **2.092** | **+$21.71** |
 
 ### Trade Count
 
-| Market condition | Trades/day | Notes |
-|---|---|---|
-| Quiet (low volatility) | 30–55 | Few delta triggers across all assets |
-| Normal | **80–110** | Typical session, mixed volatility |
-| Active (high volatility) | 130–160 | Capped by `max_daily_trades = 288` |
+The active filter chain (UP + price≤$0.67 + blackout hours) produces approximately **4–5 trades/day** in the observed period. This is intentional — the strategy trades only when the statistical edge is clear.
 
-**Filter cascade per 1,152 daily windows (3 assets × 2 durations × 192 windows/day):**
+**Filter cascade per daily windows:**
 
-| Gate | Pass rate | Remaining |
-|---|---|---|
-| Delta ≥ 0.020% | ~45% | ~518 |
-| Price $0.55–$0.95 | ~55% | ~285 |
-| Confidence ≥ 35 | ~70% | ~200 |
-| Binance agrees with Chainlink | ~72% | ~144 |
-| Order book has asks | ~85% | ~122 |
-| Concurrent limit (9 max) | ~95% | **~116** |
+| Gate | Effect |
+|------|--------|
+| Direction=UP | Removes ~8% of signals (DOWN anti-predictive) |
+| Price ≤ $0.67 | Removes ~67% — most markets price above $0.67 by the entry window |
+| Edge ≥ 6% | Removes HIGH-delta trades where fair_value was artificially inflated |
+| Blackout hours | Removes ~50% of remaining windows — but these were −$64.11 net |
+| Binance agrees | Removes ~28% of remaining |
+| Concurrent limit (6) | Rarely binds at 4–5 trades/day |
 
 ### Win Rate
 
-The edge comes from Chainlink direction being confirmed before resolution. Observed market data by signal tier:
+At avg entry $0.61, breakeven win rate is 60.7%. The filtered strategy runs at +15.3pp above breakeven:
 
-Tier classification uses **delta + edge + confidence** — not delta alone. A large oracle move with thin edge and moderate confidence is demoted from EXTREME even if delta > 0.10%:
+| Delta tier | n (filtered) | WR | Notes |
+|------------|-------------|-----|-------|
+| 0.02–0.05% | 6 | 100% | Very small n, monitor |
+| 0.05–0.10% | ~10 | 61% | Standard |
+| 0.10–0.20% | ~14 | **71%** | Best reliable bucket (PF=1.64 at price≤$0.67) |
+| 0.20–0.50% | ~5 | 48% | Blocked by min_edge_pct=6% recalibration |
 
-| Tier | Delta | Edge | Confidence | Est. true WR | Net edge |
-|---|---|---|---|---|---|
-| WEAK | 0.020–0.050% | any | any | 55–63% | Marginal |
-| MEDIUM | 0.050–0.100% | any | any | 60–68% | Low–Positive |
-| STRONG | ≥0.100% or strong+edge≥1.5% | ≥1.5% | ≥65 | 68–80% | Positive |
-| EXTREME | ≥0.100% | ≥2.0% | ≥80 | 80–92% | Strong |
+Note: 0.20–0.50% delta was counter-intuitively the worst tier (WR=47.6%). These are volatility spikes that revert before CTF settlement. The recalibrated `_fair_value()` drops the base from 0.97 → 0.65–0.70, causing most HIGH-delta trades to fail the 6% edge floor.
 
-> Example from logs: `delta=0.36% conf=79 edge=0.6%` → **STRONG** (not EXTREME), because edge < 2.0% — the book had already priced in the move before execution.
+### P&L Projections
 
-**Blended win rate projection: 62–72%**
-
-The dual-source gate (`require_binance_agrees`) skews the trade mix toward stronger signals — fewer weak-delta trades survive, pulling the blended WR up vs. Chainlink-only mode.
-
-### P&L
-
-**Per-trade math** (at avg entry $0.75, size $8.00, maker rebate):
+**Per-trade math** (avg entry $0.61, bet $4.20, taker fee 1.5%):
 
 | Outcome | Calculation | Result |
-|---|---|---|
-| Win | `($8 / $0.75) × (1 - $0.75) + $8 × 0.20%` | +$2.68 |
-| Loss | `-$8.00 + $8 × 0.20%` | -$7.98 |
-| Breakeven WR | `7.98 / (7.98 + 2.68)` | **~75%** |
+|---------|-------------|--------|
+| Win | `($4.20 / $0.61) × (1 − $0.61) × (1 − 0.015)` | +$2.68 |
+| Loss | `−$4.20` | −$4.20 |
+| Breakeven WR | `4.20 / (4.20 + 2.68)` | 61.1% |
 
-> Breakeven is ~75% — this strategy only profits when win rate consistently exceeds that. The dual-source confirmation and extreme-delta filtering are what push WR above the break-even line.
+**Conservative 10-day forward projection** (25% out-of-sample degradation applied):
 
-**Daily P&L scenarios** (100 trades/day, $8 avg size):
+| Scenario | WR | PF | EV/trade | EV/day (4.5 trades) | 10-day |
+|----------|----|----|----------|---------------------|--------|
+| Conservative | 68% | 1.40 | +$0.70 | +$3.14 | +$31.40 |
+| In-sample | 76% | 2.09 | +$1.37 | +$6.15 | +$61.50 |
 
-| Win Rate | Wins | Losses | Gross P&L | Notes |
-|---|---|---|---|---|
-| 65% | 65 | 35 | -$7.10 | Below breakeven |
-| 72% | 72 | 28 | +$55.00 | Marginal positive |
-| 78% | 78 | 22 | +$36.60/day | Target range |
-| 85% | 85 | 15 | +$106.00/day | High-conviction session |
+From $140 capital, conservative 10-day: **$140 → ~$171 (+22%)**.
 
-**Monthly projection at 78% WR, 100 trades/day:**
+### Validation Gates
 
-| Metric | Value |
-|---|---|
-| Monthly trades | ~3,000 |
-| Expected P&L | +$1,100–$3,180 |
-| Max drawdown risk | $75 × 15% = $11.25 kill switch |
-| Portfolio growth (78% WR) | +45–100% / month |
+After 50 live trades with current config:
+- **PF > 1.5**: continue; consider expanding blackout if data supports
+- **PF 1.0–1.5**: re-examine UTC hours 2 and 17 (n=4 each — may be coincidence, small sample)
+- **PF < 1.0**: likely regime change; revisit `allow_down_direction` and price cap
 
-### Key Risks to Projections
+### Key Risks
 
-- **Win rate below 75%** — the strategy loses money; most likely cause is stale opening prices or Binance/CL divergence near boundaries
-- **Empty order books** — the bot correctly skips these now, but they reduce actual trade count below projections
-- **Feed outages** — RTDS drops reduce signal quality; Binance fallback partially compensates
-- **Market regime** — projections assume BTC/ETH move meaningfully within 5-minute windows; sideways chop reduces both trade count and WR
-
-These are theoretical projections based on the strategy's design. Actual results depend on live market conditions and should be validated against real paper-mode data before increasing position sizes.
+- **Bear market regime** — `allow_down_direction=False` → 0 trades during confirmed downtrends. Monitor 3-day rolling WR; if WR < 55% over 20+ trades, re-enable DOWN direction.
+- **Liquidity drying up** — if fewer than 3 qualifying tokens/hour, consider raising `max_token_price` to $0.70.
+- **UTC 2 / UTC 17 small sample** — each has n=4 in the dataset. 95% CI on WR=25% is [1%, 81%]. After 20+ new trades in each hour, re-evaluate the blackout.
+- **Exit reversal never fires** — all 115 observed losses = exactly −1.000× size_usdc. The partial-exit feature has not triggered once. Fixing this is upside (avg loss could drop from $3.39 to $2.00–2.50).
 
 ## Risk Disclaimer
 
