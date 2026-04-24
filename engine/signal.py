@@ -16,6 +16,7 @@ Optimizations applied:
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from core.config import CFG
@@ -46,6 +47,12 @@ class HybridEngine:
         now = time.time()
         ttl = token.end_ts - now
         asset = token.asset
+
+        # ── GATE 0: UTC hour blackout ─────────────────────────────
+        if CFG.blackout_hours_utc:
+            utc_hour = datetime.now(tz=timezone.utc).hour
+            if utc_hour in CFG.blackout_hours_utc:
+                return None
 
         # ── GATE 1: Not already traded this window ────────────────
         wkey = f"{asset}_{token.window_ts}"
@@ -389,14 +396,16 @@ class HybridEngine:
         else:
             ts = 5.0
 
-        # Price score (market agreement)
-        if price >= 0.90:
+        # Price score — inverted: low price = high payoff ratio = more valuable
+        # Original rewarded market "agreement" (high price) but ignored that
+        # high price means catastrophically low payoff ratio (b=0.124 at $0.90).
+        if price < 0.58:
             ps = 20.0
-        elif price >= 0.80:
+        elif price < 0.62:
             ps = 15.0
-        elif price >= 0.70:
+        elif price < 0.65:
             ps = 10.0
-        elif price >= 0.60:
+        elif price < 0.68:
             ps = 5.0
         else:
             ps = 2.0
@@ -426,21 +435,25 @@ class HybridEngine:
         """
         abs_d = abs(delta)
 
-        # Base probability from delta magnitude (random-walk calibrated)
-        if abs_d >= 0.20:
-            base = 0.97
+        # Base probability from delta magnitude — recalibrated against 115 live trades.
+        # HIGH delta (0.20-0.50%): actual WR=47.6% not ~97% — oracle spikes revert.
+        # EXTREME delta (>0.50%): actual WR=66.7%, base=0.80.
+        if abs_d >= 0.50:
+            base = 0.80
+        elif abs_d >= 0.20:
+            base = 0.65 + (abs_d - 0.20) / 0.30 * 0.05   # 0.65→0.70 across HIGH tier
         elif abs_d >= 0.15:
-            base = 0.96 + (abs_d - 0.15) / 0.05 * 0.01
+            base = 0.76 + (abs_d - 0.15) / 0.05 * 0.04
         elif abs_d >= 0.10:
-            base = 0.93 + (abs_d - 0.10) / 0.05 * 0.03
+            base = 0.73 + (abs_d - 0.10) / 0.05 * 0.03
         elif abs_d >= 0.05:
-            base = 0.87 + (abs_d - 0.05) / 0.05 * 0.06
-        elif abs_d >= 0.025:
-            base = 0.78 + (abs_d - 0.025) / 0.025 * 0.09
-        elif abs_d >= 0.015:
-            base = 0.72 + (abs_d - 0.015) / 0.01 * 0.06
+            base = 0.62 + (abs_d - 0.05) / 0.05 * 0.11
+        elif abs_d >= 0.03:
+            base = 0.59 + (abs_d - 0.03) / 0.02 * 0.03
+        elif abs_d >= 0.02:
+            base = 0.56 + (abs_d - 0.02) / 0.01 * 0.03
         else:
-            base = 0.65 + abs_d * 4.7
+            base = 0.50 + abs_d * 2.0
 
         # Time adjustment — stronger boost at short TTL
         if ttl <= 5:

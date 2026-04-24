@@ -1,3 +1,29 @@
+# AI Ethics & Grounding Rules
+
+## Anti-Hallucination Protocol
+- **Read Before Action**: NEVER suggest a change to a file you have not read in the current session.
+- **Strict Verification**: If you aren't 100% sure a library version supports a feature, check `package.json` (Node) or `requirements.txt/pyproject.toml` (Python) first.
+- **Reference Code**: When explaining logic, provide a snippet from the source file. No "placeholder" code.
+
+
+## Project Standards
+- **Manual Verification**: After editing, you MUST run the language-specific linter mentioned above.
+- **Fact-Checking**: Use the `web_search` tool for library documentation rather than relying on training data for versions released after 2024.
+
+
+# Python Grounding Rules
+
+## Anti-Hallucination
+- **Environment**: Always assume we are in a virtual environment. Run `pip list` if you need to verify an installed library.
+- **Pathing**: Use `pathlib` for file operations. Do not hallucinate OS-specific paths.
+- **Type Safety**: We use Type Hints. Do not suggest code without `typing` annotations.
+
+## Technical Standards
+- **Linter/Formatter**: `ruff check .` and `ruff format .`
+- **Testing**: `pytest`
+- **Style**: Follow PEP 8 strictly.
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

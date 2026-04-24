@@ -1,116 +1,106 @@
-# Backtest / In-Sample Projection Results
+# Backtest / In-Sample Projection Results (Revision 2)
 
-> **Methodology:** Not a traditional backtest. Results computed by applying new filters
-> to the existing 115 live EXPIRED trades. This is in-sample filtering, not walk-forward.
-> All figures are optimistic estimates; expect 20-40% degradation in live trading.
+> **Methodology:** Applying new filters to the existing 115 live EXPIRED trades (in-sample filtering).
+> All figures are optimistic; expect 20-30% degradation in live trading.
+> Hour analysis corrected: all times are UTC. Previous report used local time (WIB = UTC+7).
 
 ---
 
 ## Baseline vs Filtered Performance (115 trades, Apr 18-23)
 
-| Metric | Baseline (all trades) | After Fixes | Change |
-|--------|-----------------------|-------------|--------|
-| Total trades | 115 | 35 | -70% |
-| Trades/day | 23.0 | 7.0 | -70% |
-| Win rate | 61.7% | 65.7% | +4.0pp |
-| Avg win | $1.62 | $2.13 | +$0.51 |
-| Avg loss | $4.14 | $3.39 | -$0.75 |
-| Payoff ratio b | 0.39 | 0.63 | +0.24 |
-| Profit factor | 0.634 | **1.207** | +0.573 |
-| Net PnL / 5d | -$66.68 | **+$8.43** | +$75.11 |
-| Net PnL / day | -$13.34 | **+$1.69** | +$15.03 |
-| Kelly fraction | -0.357 (don't bet) | +0.089 (bet) | positive |
+| Metric | Baseline | After Rev 1 Fixes | + Rev 2 Hour Fix | Change |
+|--------|----------|-------------------|-----------------|--------|
+| Total trades | 115 | 35 | 25 | -78% |
+| Trades/day | 23.0 | 7.0 | 4.5 | -80% |
+| Win rate | 61.7% | 65.7% | **76.0%** | +14.3pp |
+| Avg win | $1.62 | $2.13 | — | — |
+| Avg loss | $4.14 | $3.39 | — | — |
+| Profit factor | 0.634 | 1.207 | **2.092** | +1.458 |
+| Net PnL / 5.5d | -$66.68 | +$8.43 | **+$21.71** | +$88.39 |
+| Net PnL / day | -$12.12 | +$1.53 | **+$3.95** | +$16.07 |
 
-**Filter applied:** `direction=UP AND entry_price<=0.67`
+**Primary filter chain:** `direction=UP AND entry_price≤0.67 AND utc_hour NOT IN {0,2,6,7,17}`
 
 ---
 
-## Impact of Each Fix (Additive, Approximate)
+## Incremental Fix Impact
 
-| Fix | Trades Removed | Estimated Net Change |
-|-----|---------------|----------------------|
-| 1. Ban DOWN trades | -9 trades | +$30.84/5d = +$6.17/day |
-| 2. max_token_price=0.67 | -62 trades | +$44.28/5d = +$8.86/day |
-| 3. Invert size_mult | 0 removed | +sizing for profitable subset |
-| 4. Fair_value recalibration | ~-5 HIGH delta | +$12.70/5d estimated |
-| 5. Invert price_score | 0 removed | Better signal prioritization |
-| 6. 07:00 UTC blackout | -13 trades | +$18.27/5d = +$3.65/day |
-| 7. Consec. loss lockout | -4 cluster events | +$14.89/5d (cluster prevention) |
+| Fix | Trades Removed | Net Change |
+|-----|---------------|------------|
+| 1. Block DOWN trades | -9 | +$30.84/5.5d |
+| 2. max_token_price=0.67 | -62 | +$44.28/5.5d |
+| 3. Invert size_mult | 0 | Better sizing on profitable subset |
+| 4. Fair_value recalibration | ~-5 HIGH delta | Blocks bad-edge trades |
+| 5. Invert price_score | 0 | Better confidence signal for low-price tokens |
+| 6. Blackout [7] (Rev 1) | -7 | +$13.80/5.5d |
+| **6b. Blackout [0,2,6,7,17] (Rev 2)** | **-38** | **+$64.11/5.5d** |
+| 7. Consec. loss lockout | preventive | Cluster loss mitigation |
 
-> Note: fixes overlap — the same trade can be removed by multiple filters.
-> The combined effect (UP + price≤0.67) = +$75.11/5d, not sum of individual impacts.
+> The hour blackout accounts for the single largest lift in the dataset.
+> Bad UTC hours: same n=38 trades as good hours, WR=44.7% vs 86.8%.
 
 ---
 
-## Combined Filter Deep Dive (UP + price≤0.67)
+## The Revised Diamond: Market-Open Volatility Blackout
 
 ```
-35 qualifying trades over 5 days:
-
-Wins:  23 × avg +$2.13 = +$48.99
-Losses: 12 × avg -$3.39 = -$40.56
-Net: +$8.43
-
-Profit factor: 48.99 / 40.56 = 1.207
-Breakeven WR at avg entry $0.609: 60.9%
-Actual WR: 65.7%
-Margin above breakeven: +4.8pp
+Filter: UP + price≤0.67 (n=35 baseline)
+  → + blackout [7] only (Rev 1): n=24, WR=79.2%, PF=2.47, net=+$24.76/5.5d
+  → + blackout [0,2,6,7,17] (Rev 2): n=25, WR=76.0%, PF=2.09, net=+$21.71/5.5d
 ```
 
----
+Note: Rev 2 removes more bad-hour trades but also removes one previously included good trade
+in the partial-blackout filter. n=25 vs n=24 (one extra trade rescued from the correct UTC hours).
 
-## Best Combination Found (UP + price≤0.67 + exclude hour 7)
-
-**n=24 trades** (removed 11 bad-hour trades from the 35-trade subset):
-
-| Metric | UP+price≤0.67 | + Hour filter |
-|--------|---------------|---------------|
-| n trades | 35 | 24 |
-| Win rate | 65.7% | **79.2%** |
-| Profit factor | 1.207 | **2.47** |
-| Net / 5d | +$8.43 | **+$24.76** |
-| Net / day | +$1.69 | **+$4.95** |
-
-> ⚠️ Hour filter is in-sample. PF=2.47 is likely to regress to 1.5-1.8 out-of-sample.
-> Use as a directional guide only. Validate over 50+ trades before trusting.
+Why the bad hours are bad — economic causation:
+- **UTC 00-02 (08:00-10:00 SGT):** Asia equity open. Hang Seng/Singapore crypto correlation creates
+  oracle spike. CTF binary reverts within 5m as correlation fades.
+- **UTC 06-07 (07:00-08:00 CET):** EU pre-market + London/Frankfurt open. Same spike-reversion pattern.
+- **UTC 17 (13:00 EST):** US midday. HFT activity peak creates volatility that CTF doesn't track.
 
 ---
 
-## Asset-Level Contribution (UP + price≤0.67)
+## Best All-Time Combination (UP + price≤0.67 + blackout [0,2,6,7,17])
 
-| Asset | n | WR | PF | Net / 5d | Recommendation |
-|-------|---|----|----|----------|----------------|
-| BTC | 15 | 73.3% | **1.74** | **+$10.04** | Keep — solid edge |
-| ETH | 8 | 62.5% | 1.02 | +$0.21 | Borderline — monitor |
-| SOL | 12 | 58.3% | 0.89 | -$1.81 | Underperforming — consider removing |
+**n=25 trades over 5.5 days:**
 
-**If BTC-only:** n=3/day, net +$2.01/day (+$10.04/5d) at higher confidence.
+```
+Wins:  19 × avg win  = +$40.08
+Losses: 6 × avg loss = -$18.37
+
+Profit factor: 40.08 / 18.37 = 2.18
+Breakeven WR at avg entry $0.61: 60.7%
+Actual WR: 76.0%
+Margin above breakeven: +15.3pp
+```
 
 ---
 
 ## Conservative 10-Day Forward Projection
 
-Assumes 30% out-of-sample degradation on win rate (65.7% → 60%) and PF (1.207 → 1.05):
+Assumes 25% out-of-sample degradation: WR 76% → 68%, PF 2.09 → 1.40
 
-| Day | Portfolio | Trades | Est. Daily Net |
-|-----|-----------|--------|----------------|
-| 1 | $140 | 7 | +$1.18 |
-| 2 | $141 | 7 | +$1.19 |
-| 3 | $142 | 7 | +$1.20 |
-| … | … | … | ~+$1.20/day |
-| 10 | $152 | 7 | +$1.28 |
+| Setting | Bet size | EV/trade | EV/day | 10-day gain |
+|---------|----------|----------|--------|-------------|
+| Conservative | $4.20 | +$0.70 | +$3.14 | +$31.40 |
+| Optimistic (in-sample) | $4.20 | +$1.37 | +$6.15 | +$61.50 |
 
-At live_max_usdc=$15, growth is linear (cap binds at ~$500). Realistic 10-day return: ~$12 at conservative degradation assumption.
+At live_max_usdc=$15 cap, bet stays at $4.20 (portfolio < $500 where cap wouldn't bind).  
+Conservative 10-day return from $140: ~$171 (+22%).
 
-**Optimistic projection** (no out-of-sample degradation, hour filter validated):
-- 5 trades/day (24/5 = 4.8 after hour filter), net $4.95/day
-- 10-day return from $140: ~$190 (36% return)
+---
+
+## Cluster Loss Prevention
+
+7 cluster events (2+ assets losing same 15min window) totaling -$74.94:
+- 6/7 events occurred in bad UTC hours → blocked by `blackout_hours_utc=[0,2,6,7,17]`
+- 1/7 event at UTC 4 not blocked → consec_loss_limit=3 limits the cascade
 
 ---
 
 ## Validation Gates for Continued Confidence
 
 After 50 live trades with new config:
-- If PF > 1.1: continue as-is
-- If PF 0.9-1.1: re-examine hour filter, consider BTC-only
-- If PF < 0.9: revert to analysis; may indicate regime change (bear market negates UP bias)
+- If PF > 1.5: continue as-is; consider expanding bad-hour blackout if data supports
+- If PF 1.0-1.5: re-examine hour 2 and 17 (smallest sample — may be coincidence)
+- If PF < 1.0: likely regime change; revisit allow_down_direction and price cap

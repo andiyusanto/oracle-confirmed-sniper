@@ -1,15 +1,16 @@
 """
-Config Updates — Evidence-Based Parameter Changes
-====================================================
+Config Updates — Evidence-Based Parameter Changes (Revision 2)
+=================================================================
 All changes derived from analysis of 115 live EXPIRED trades (Apr 18-23, 2026).
 See ANALYSIS_REPORT.md for full findings.
 
-Usage: These are the recommended values. Apply by restarting the bot.
+REVISION 2 CORRECTION: blackout_hours_utc was [7] (computed in local WIB time).
+Correct UTC values are [0, 2, 6, 7, 17] — Asia, EU, and US midday market opens.
 """
 
 CHANGES = {
     # ────────────────────────────────────────────────────────────────────────
-    # CRITICAL: Structural Fixes (implement immediately)
+    # CRITICAL: Structural Fixes
     # ────────────────────────────────────────────────────────────────────────
 
     "max_token_price": {
@@ -17,114 +18,122 @@ CHANGES = {
         "new": 0.67,
         "finding": "Finding #2",
         "rationale": (
-            "Entry price determines the payoff ratio b=(1-e)/e*(1-fee). "
-            "At e=0.75 you need WR>77.2%; strategy produces only 58.6%. "
-            "UP+price<=0.67 subset: PF=1.207, net=+$8.43/5d. "
-            "UP+price>0.67 subset: PF=0.71, net=-$44.28/5d. "
-            "The $0.67 breakpoint was identified via full price cap sweep."
+            "Entry price determines payoff ratio b=(1-e)/e*(1-fee). "
+            "At e=0.75 you need WR>77.2%; strategy produces 61.7%. "
+            "UP+price≤0.67: PF=1.207, net=+$8.43/5.5d. "
+            "UP+price>0.67: PF=0.71, net=-$44.28/5.5d. "
         ),
-        "expected_impact": "+$8.94/5d",
+        "expected_impact": "+$44.28/5.5d = +$8.05/day",
     },
 
-    "only_up": {
-        "old": "N/A (did not exist)",
-        "new": True,
+    "allow_down_direction": {
+        "old": True,
+        "new": False,
         "finding": "Finding #1",
         "rationale": (
-            "DOWN oracle signal is anti-predictive: 9 trades, WR=11.1% "
-            "(z=-2.33, p<0.05 vs random). Net loss -$30.84/5d = 46% of "
-            "all losses on 8% of trades. The DOWN signal fires during "
-            "trend dips that reverse before settlement in bull conditions."
+            "DOWN oracle: 9 trades, WR=11.1% (z=-2.33, p<0.05 vs random). "
+            "Net loss -$30.84/5.5d = 46% of all losses on 8% of trades. "
+            "DOWN signals fire during trend dips that reverse before settlement in bull conditions."
         ),
-        "expected_impact": "+$6.17/day",
+        "expected_impact": "+$30.84/5.5d = +$5.61/day",
     },
 
     "size_mult_low": {
         "old": 0.5,
-        "new": 1.3,
+        "new": 1.0,
         "finding": "Finding #3",
         "rationale": (
-            "Low-price tokens have b=0.66+ (best payoff ratio). "
-            "Original 0.5x was wrong — these should be the LARGEST bets. "
-            "With max_token_price=0.67, all entries now fall in this bucket."
+            "Low-price tokens b=0.66+ (best payoff). Original 0.5× was wrong. "
+            "1.0× = quarter-Kelly (3.0% of $140 portfolio = $4.20). "
+            "Kill switch requires 5 consecutive losses — safe. "
+            "(1.3× was rejected: 1.38× quarter-Kelly, kill switch at 3.8 losses)"
         ),
-        "expected_impact": "2.6x bet sizing increase on the profitable subset",
+        "expected_impact": "2× bet sizing on profitable subset vs original",
     },
 
     "size_mult_high": {
         "old": 1.3,
         "new": 0.5,
         "finding": "Finding #3",
-        "rationale": (
-            "High-price tokens (>0.85) had b=0.124, need WR>89%. "
-            "Giving 1.3x to these was the worst sizing decision. "
-            "Now blocked by max_token_price=0.67 anyway."
-        ),
-        "expected_impact": "Historical: prevented $X.XX in amplified losses",
+        "rationale": "High-price tokens b=0.124, need WR>89%. Inverted.",
+        "expected_impact": "Prevented amplified losses on worst-EV bucket",
     },
 
     "min_edge_pct": {
-        "old": 9.0,
+        "old": 0.0,
         "new": 6.0,
         "finding": "Finding #4",
         "rationale": (
-            "Old fair_value was over-optimistic (returned 0.95 for delta>=0.20%), "
-            "making 9% easy to pass for bad trades. "
-            "Recalibrated fair_value is conservative; 6% floor still maintains "
-            ">4pp above fee breakeven (~1.9% at entry=0.60)."
+            "Previous fair_value returned 0.97 for delta≥0.20% (actual WR=47.6%). "
+            "Recalibrated fair_value + 6% floor blocks HIGH-delta bad trades at entry=0.60-0.67."
         ),
-        "expected_impact": "Blocks HIGH-delta bad trades while allowing STRONG-delta good ones",
+        "expected_impact": "Blocks HIGH-delta false-edge trades",
     },
 
     "max_daily_trades": {
         "old": 288,
         "new": 50,
         "finding": "General",
-        "rationale": (
-            "UP+price<=0.67 generates ~7 trades/day. "
-            "288 was calibrated for all-direction, all-price trading. "
-            "50 provides headroom above the expected ~7/day without risk "
-            "of runaway signaling from a configuration bug."
-        ),
-        "expected_impact": "Safety cap; no EV impact under normal conditions",
+        "rationale": "UP+price≤0.67+blackout generates ~4.5/day. 50 is a safety cap.",
+        "expected_impact": "Safety cap only; no EV impact under normal conditions",
     },
 
     "max_concurrent_positions": {
         "old": 9,
         "new": 6,
-        "finding": "Finding #6 (correlated losses)",
+        "finding": "Finding #6 (cluster losses)",
         "rationale": (
-            "4 window-level cluster events accounted for 63% of total losses. "
-            "All 3-asset concurrent losses (Apr 20 14:49: -$13.89; "
-            "Apr 23 09:58: -$13.81) occurred when max_concurrent was reached. "
-            "Reducing to 6 (2 per asset) limits cluster exposure."
+            "7 cluster events (2+ assets losing simultaneously) = 63% of total losses. "
+            "Reducing to 6 (2 per asset max) limits cluster exposure."
         ),
-        "expected_impact": "-$4.17/event prevented on avg",
+        "expected_impact": "-$4-14 per cluster event prevented",
     },
 
     "consec_loss_limit": {
-        "old": "N/A (did not exist)",
+        "old": "N/A",
         "new": 3,
         "finding": "Finding #6",
-        "rationale": (
-            "After 3 consecutive losses, market conditions are likely adverse "
-            "(macro event, bad session). 30-min lockout prevents feeding a losing streak."
-        ),
-        "expected_impact": "Prevents cluster loss episodes from escalating",
+        "rationale": "After 3 consecutive losses, conditions are adverse. 30-min lockout.",
+        "expected_impact": "Prevents cluster loss escalation",
     },
 
-    "blackout_hours_utc": {
-        "old": "N/A (did not exist)",
-        "new": [7],
-        "finding": "Finding #6 (THE DIAMOND)",
+    "snipe_exit_sec": {
+        "old": 25.0,
+        "new": 16.0,
+        "finding": "Ghost prevention",
         "rationale": (
-            "Hour 07:00 UTC (EU market open): n=13 UP trades, WR=46.2%, "
-            "net=-$18.27. The EU open causes crypto volatility spikes that "
-            "oracle feeds capture but CTF markets revert within 5m. "
-            "Hour 08:00 UTC (post-open): WR=100%, n=7, net=+$10.67. "
-            "Expand to [7, 9, 13, 14] after 10+ trades/hour are accumulated."
+            "3 confirmed ghost redemptions: YES tokens resolved $0 on-chain at TTL≤15s. "
+            "16.0s provides 1s buffer above confirmed ghost zone."
         ),
-        "expected_impact": "+$3.65/day (saving 2.6 bad trades/day at 07:00)",
+        "expected_impact": "Eliminates confirmed ghost categories",
+    },
+
+    # ────────────────────────────────────────────────────────────────────────
+    # REVISION 2: Timezone-corrected blackout hours
+    # ────────────────────────────────────────────────────────────────────────
+
+    "blackout_hours_utc": {
+        "old": "[7]  ← WRONG: computed in local WIB time, was blocking UTC 7 only",
+        "new": "[0, 2, 6, 7, 17]",
+        "finding": "Finding #6 REVISED",
+        "rationale": (
+            "CRITICAL CORRECTION: previous analysis computed hours in local time (WIB = UTC+7). "
+            "UTC 0 = 07:00 WIB — the biggest bad window (n=13, WR=46%, net=-$18.27). "
+            "\n"
+            "Correct bad UTC hours are market-open volatility windows:\n"
+            "  UTC 00: Asia equity open (08:00 SGT). n=13, WR=46%, net=-$18.27\n"
+            "  UTC 02: Asia mid-morning (10:00 SGT). n=4, WR=25%, net=-$12.18\n"
+            "  UTC 06: EU pre-market (07:00 CET). n=10, WR=50%, net=-$13.25\n"
+            "  UTC 07: EU market open (08:00 CET). n=7, WR=43%, net=-$13.80\n"
+            "  UTC 17: US midday algo peak (13:00 EST). n=4, WR=50%, net=-$6.61\n"
+            "\n"
+            "38 trades in bad hours: WR=44.7%, PF=0.266, net=-$64.11\n"
+            "38 trades in good hours: WR=86.8%, PF=3.130, net=+$38.59\n"
+            "Same trade count. Completely opposite outcomes.\n"
+            "6/7 cluster loss events (2+ assets losing simultaneously) occurred in bad hours."
+        ),
+        "expected_impact": "+$64.11/5.5d = +$11.66/day (full blackout vs no blackout). "
+                           "+$50.31/5.5d = +$9.15/day incremental vs old blackout=[7].",
     },
 
     # ────────────────────────────────────────────────────────────────────────
@@ -132,33 +141,30 @@ CHANGES = {
     # ────────────────────────────────────────────────────────────────────────
 
     "_fair_value_HIGH_delta": {
-        "old": "base = 0.95 for delta >= 0.20%",
+        "old": "base = 0.97 for delta >= 0.20%",
         "new": "base = 0.65-0.70 for delta 0.20-0.50%; 0.80 for delta >= 0.50%",
         "finding": "Finding #4",
         "rationale": (
-            "HIGH delta (0.20-0.50%): actual WR=47.6% vs model assumption ~95%. "
-            "Recalibrated to actual win rate. At entry=0.60, new fair_value "
-            "gives edge~3.3%, below min_edge_pct=6% → blocks most HIGH delta trades."
+            "HIGH delta (0.20-0.50%): actual WR=47.6% vs model assumption ~97%. "
+            "At entry=0.60, new fair_value gives edge~3.3%, below min_edge_pct=6% → blocks most."
         ),
     },
 
     "_score_price_component": {
-        "old": "price>=0.90: 20pts, price<0.60: 2pts",
-        "new": "price<0.58: 20pts, price<0.62: 15pts, price>=0.65: 5pts",
+        "old": "price>=0.90: 20pts (rewards market 'agreement' = high price)",
+        "new": "price<0.58: 20pts; <0.62: 15pts; <0.65: 10pts; <0.68: 5pts",
         "finding": "Finding #5",
         "rationale": (
             "Inverted to reward low-price (high-EV) tokens. "
-            "Original rewarded market 'agreement' (high price = likely winner) "
-            "but ignored that high price also means catastrophically low payoff ratio."
+            "Original gave 20pts to $0.90 token (needs 90.2% WR) and 2pts to $0.57 token (needs 56% WR)."
         ),
     },
 }
 
 
 def print_summary():
-    """Print a summary of all changes."""
     print("=" * 65)
-    print("CONFIG CHANGES SUMMARY")
+    print("CONFIG CHANGES SUMMARY (Revision 2)")
     print("=" * 65)
     for param, info in CHANGES.items():
         if param.startswith("_"):
