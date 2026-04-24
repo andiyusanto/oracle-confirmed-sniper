@@ -17,6 +17,8 @@ class RiskManager:
         self.kill_switch = False
         self._daily_count = 0
         self._last_day = ""
+        self._consecutive_losses = 0
+        self._lockout_until = 0.0
         self._check_day()
 
     def _check_day(self):
@@ -32,6 +34,12 @@ class RiskManager:
 
         if self.kill_switch:
             return False, "kill switch active"
+
+        # Consecutive loss lockout
+        now = time.time()
+        if now < self._lockout_until:
+            remaining = int(self._lockout_until - now)
+            return False, f"consecutive loss lockout ({remaining}s remaining)"
 
         daily_pnl = self.db.daily_pnl()
 
@@ -57,6 +65,17 @@ class RiskManager:
     def on_trade(self, pnl: float = 0):
         self._daily_count += 1
         self.portfolio = max(1.0, self.portfolio + pnl)
+        if pnl < 0:
+            self._consecutive_losses += 1
+            if self._consecutive_losses >= CFG.consec_loss_limit:
+                lockout_sec = CFG.consec_loss_lockout_min * 60
+                self._lockout_until = time.time() + lockout_sec
+                log.warning(
+                    "LOCKOUT: %d consecutive losses — pausing %d min",
+                    self._consecutive_losses, CFG.consec_loss_lockout_min,
+                )
+        else:
+            self._consecutive_losses = 0
 
     def update_portfolio(self, pnl: float):
         self.portfolio = max(1.0, self.portfolio + pnl)
