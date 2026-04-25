@@ -14,6 +14,7 @@ Falls back silently if credentials are missing or sends fail.
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 import httpx
 
 from core.config import CFG
@@ -24,6 +25,11 @@ log = logging.getLogger("hybrid.telegram")
 # but we keep it conservative to avoid issues)
 _MIN_INTERVAL = 1.0
 _last_send_ts = 0.0
+
+# Kill switch reminder: re-notify every hour while kill switch remains active
+_KILL_SWITCH_NOTIFY_INTERVAL = 3600.0
+_last_kill_switch_notify_ts = 0.0
+_last_kill_switch_notify_day = ""
 
 
 def is_configured() -> bool:
@@ -149,14 +155,33 @@ async def notify_trade_closed(trade) -> bool:
 
 async def notify_kill_switch(reason: str, daily_pnl: float,
                               portfolio: float) -> bool:
-    """Send alert when kill switch is triggered."""
+    """Send alert when kill switch is triggered.
+
+    Fires immediately on first activation, then repeats every hour while
+    the kill switch remains active — prevents spam on every poll loop.
+    """
+    global _last_kill_switch_notify_ts, _last_kill_switch_notify_day
+
+    now = time.time()
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    if today != _last_kill_switch_notify_day:
+        # New UTC day — reset so the first trigger fires immediately
+        _last_kill_switch_notify_ts = 0.0
+        _last_kill_switch_notify_day = today
+
+    elapsed = now - _last_kill_switch_notify_ts
+    if elapsed < _KILL_SWITCH_NOTIFY_INTERVAL:
+        return False
+
+    _last_kill_switch_notify_ts = now
     msg = (
-        f"🚨 <b>KILL SWITCH ACTIVATED</b>\n"
+        f"🚨 <b>KILL SWITCH ACTIVE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Reason: {_escape_html(reason)}\n"
         f"Daily P&L: <b>${daily_pnl:+.4f}</b>\n"
         f"Portfolio: ${portfolio:.2f}\n"
-        f"⚠️ Trading paused until next UTC day"
+        f"⚠️ Trading paused until next UTC day\n"
+        f"🔁 Next reminder in 1 hour"
     )
     return await send(msg)
 

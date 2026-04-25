@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile core/telegram.py)",
+      "Bash(python3 -m ruff check core/telegram.py)"
+    ]
+  }
+}
