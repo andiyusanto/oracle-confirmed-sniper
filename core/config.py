@@ -3,7 +3,7 @@ Configuration for Oracle-Confirmed Sniper (Strategy D).
 
 Optimized for maximum PnL × trade count product.
 Changes from original:
-  - Tiered entry windows: aggressive (T-45s) for strong deltas, 
+  - Tiered entry windows: aggressive (T-45s) for strong deltas,
     conservative (T-25s) for weak deltas
   - Delta thresholds raised slightly to filter noise
   - Confidence threshold lowered for high-delta signals
@@ -44,30 +44,37 @@ class Config:
     # Extreme delta (>0.10%) → enter from T-55s (very high conviction)
 
     # ── Window timing ───────────────────────────────────────────────
-    oracle_watch_sec: float = 120.0     # start watching at T-120s
-    snipe_entry_sec: float = 75.0       # max entry window (extreme delta)
-    snipe_entry_strong: float = 55.0    # strong delta entry
-    snipe_entry_weak: float = 40.0      # weak delta entry — widened from 35s; was 25.0
-    snipe_exit_sec: float = 16.0        # minimum TTL at entry — TTL≤15s is ghost zone (3 confirmed cases)
+    oracle_watch_sec: float = 120.0  # start watching at T-120s
+    snipe_entry_sec: float = 75.0  # max entry window (extreme delta)
+    snipe_entry_strong: float = 55.0  # strong delta entry
+    snipe_entry_weak: float = 40.0  # weak delta entry — widened from 35s; was 25.0
+    snipe_exit_sec: float = (
+        16.0  # minimum TTL at entry — TTL≤15s is ghost zone (3 confirmed cases)
+    )
 
-    # ── Oracle thresholds (slightly tightened) ──────────────────────
-    min_delta_pct: float = 0.012        # lowered: captures 0.013-0.014% near-misses seen in flat markets
-    strong_delta_pct: float = 0.050     # unchanged
-    extreme_delta_pct: float = 0.100    # unchanged
+    # ── Oracle thresholds ────────────────────────────────────────────
+    # Live data: delta 0.05-0.10% (STRONG tier) WR=23% on 13 trades = -$24.98.
+    # Only EXTREME tier (>0.10%) is profitable: WR=68% on 19 trades = +$4.96.
+    # Raise min threshold to filter out the loss-generating STRONG tier entirely.
+    min_delta_pct: float = 0.100  # was 0.012 — only trade when oracle moves ≥0.10%
+    strong_delta_pct: float = 0.150  # STRONG tier: 0.10-0.15% (future differentiation)
+    extreme_delta_pct: float = 0.100  # unchanged — all signals qualifying are extreme
 
     # ── Token price range ───────────────────────────────────────────
     min_token_price: float = 0.55
-    max_token_price: float = 0.67       # UP+price≤0.67: PF=1.207; UP+price>0.67: PF=0.71
+    max_token_price: float = 0.67  # UP+price≤0.67: PF=1.207; UP+price>0.67: PF=0.71
 
     # ── Direction filter ─────────────────────────────────────────────
     # DOWN oracle signal is anti-predictive in bull conditions: 9 trades, WR=11.1%
     # (z=-2.33, p<0.05). Net loss -$30.84/5d = 46% of all losses on 8% of trades.
-    allow_down_direction: bool = False  # was True — UP-only eliminates worst loss source
+    allow_down_direction: bool = (
+        False  # was True — UP-only eliminates worst loss source
+    )
 
     # DOWN condition thresholds
-    down_min_delta_pct: float = 0.10     # minimum |delta| for DOWN (extreme tier)
-    down_snipe_entry_sec: float = 35.0   # DOWN: only enter when TTL ≤ 35s
-    down_snipe_exit_sec: float = 10.0    # DOWN: minimum TTL at entry
+    down_min_delta_pct: float = 0.10  # minimum |delta| for DOWN (extreme tier)
+    down_snipe_entry_sec: float = 35.0  # DOWN: only enter when TTL ≤ 35s
+    down_snipe_exit_sec: float = 10.0  # DOWN: minimum TTL at entry
 
     # ── Oracle source ────────────────────────────────────────────────
     # Require Binance to agree with Chainlink direction before trading.
@@ -76,8 +83,8 @@ class Config:
     require_binance_agrees: bool = True
 
     # ── Confidence scoring ──────────────────────────────────────────
-    min_confidence: float = 20.0        # floor only — real trades score 55+; was 35.0
-    min_confidence_strong: float = 15.0 # lower bar for strong deltas; was 30.0
+    min_confidence: float = 20.0  # floor only — real trades score 55+; was 35.0
+    min_confidence_strong: float = 15.0  # lower bar for strong deltas; was 30.0
     # Score components:
     #   delta_score:    0-40 (how far oracle moved from open)
     #   time_score:     0-30 (less time = more certain)
@@ -85,28 +92,30 @@ class Config:
     #   freshness_score: 0-10 (Chainlink data staleness)
 
     # ── Position sizing ─────────────────────────────────────────────
-    max_position_pct: float = 3.0       # max 3% of portfolio
-    max_position_usdc: float = 30.0     # hard cap
-    kelly_fraction: float = 0.25        # quarter-Kelly
-    live_max_usdc: float = 15.0         # live safety cap (≥$4.75 needed for 5-share minimum)
-    min_shares: float = 5.0             # Polymarket minimum order size (shares)
+    max_position_pct: float = 3.0  # max 3% of portfolio
+    max_position_usdc: float = 30.0  # hard cap
+    kelly_fraction: float = 0.25  # quarter-Kelly
+    live_max_usdc: float = 15.0  # live safety cap (≥$4.75 needed for 5-share minimum)
+    min_shares: float = 5.0  # Polymarket minimum order size (shares)
 
     # ── Dynamic sizing by entry price ───────────────────────────────
     # Inverted from original — low-price tokens have best payoff ratio (b≥0.66).
     # With max_token_price=0.67, all entries fall in the low bucket.
     # 1.0× = quarter-Kelly (3.0% of portfolio at $140) — safe, 5 losses to kill switch.
-    size_mult_low: float = 1.0          # $0.55-0.70: full size (best EV)
-    size_mult_mid: float = 0.9          # $0.70-0.85: slightly reduced
-    size_mult_high: float = 0.5         # $0.85-0.95: half size (worst payoff ratio)
+    size_mult_low: float = 1.0  # $0.55-0.70: full size (best EV)
+    size_mult_mid: float = 0.9  # $0.70-0.85: slightly reduced
+    size_mult_high: float = 0.5  # $0.85-0.95: half size (worst payoff ratio)
 
     # ── Risk management ─────────────────────────────────────────────
     kill_switch_drawdown_pct: float = 15.0
-    max_daily_trades: int = 50           # UP+price≤0.67 generates ~7/day; 50 is a safety cap
-    max_concurrent_positions: int = 6    # was 9 — cluster losses: 4 events = 63% of all losses
+    max_daily_trades: int = 50  # UP+price≤0.67 generates ~7/day; 50 is a safety cap
+    max_concurrent_positions: int = (
+        6  # was 9 — cluster losses: 4 events = 63% of all losses
+    )
     cooldown_sec: float = 0.5
     max_daily_loss_pct: float = 10.0
-    consec_loss_limit: int = 3           # trigger lockout after 3 consecutive losses
-    consec_loss_lockout_min: int = 30    # lockout duration in minutes
+    consec_loss_limit: int = 3  # trigger lockout after 3 consecutive losses
+    consec_loss_lockout_min: int = 30  # lockout duration in minutes
     # Market-open volatility windows — oracle fires on spike but CTF reverts before settlement.
     # UTC 00-02: Asia equity open (HK/SGX 08:00-10:00 SGT = 00:00-02:00 UTC)
     # UTC 06-07: EU pre-market + London/Frankfurt open (07:00-08:00 CET = 06:00-07:00 UTC)
@@ -122,8 +131,8 @@ class Config:
     # Market requires fee_rate_bps=1000 (10%). Previous assumption of 2% was
     # wrong — CLOB rejected orders with fee_rate_bps=200.
     use_maker: bool = False
-    maker_rebate_pct: float = 0.20   # unused while use_maker=False
-    taker_fee_pct: float = 1.5        # confirmed ~1.31% on-chain; 1.5% is a safe ceiling
+    maker_rebate_pct: float = 0.20  # unused while use_maker=False
+    taker_fee_pct: float = 1.5  # confirmed ~1.31% on-chain; 1.5% is a safe ceiling
 
     # ── Edge filter floor ───────────────────────────────────────────
     # Minimum edge % required before a signal is traded. With 1.5% taker fee,
@@ -138,10 +147,12 @@ class Config:
 
     # ── Signal quality gates (ghost-redemption prevention) ──────────────
     # 1. Staleness hard gate: block entry when CL data is stale AND TTL > 15s
-    cl_staleness_hard_sec: float = 30.0  # raised: aligns with best_price() 30s threshold; was 15.0
+    cl_staleness_hard_sec: float = (
+        30.0  # raised: aligns with best_price() 30s threshold; was 15.0
+    )
 
     # 2. Spread gate: skip tokens with wide bid-ask spread (thin/uncertain market)
-    max_spread_pct: float = 0.12         # tightened from 0.20 — wide spread = signal already priced in or thin book
+    max_spread_pct: float = 0.12  # tightened from 0.20 — wide spread = signal already priced in or thin book
 
     # 3. Consecutive pass: signal must pass all gates twice before firing
     consecutive_pass_window_sec: float = 3.0  # widened for async I/O latency; was 2.0
@@ -155,13 +166,15 @@ class Config:
     # After a fill, if oracle delta reverses and holds for exit_reversal_hold_sec,
     # attempt to sell the position back to the CLOB to limit the loss.
     exit_reversal_min_ttl: float = 12.0  # skip exit if < 12s left in window
-    exit_reversal_hold_sec: float = 8.0  # reversal must persist this long before exiting
+    exit_reversal_hold_sec: float = (
+        8.0  # reversal must persist this long before exiting
+    )
 
     # ── Infrastructure ──────────────────────────────────────────────
     db_path: str = "hybrid_trades.db"
-    log_dir: str = "logs"             # daily logs saved as logs/YYYY-MM-DD_hybrid.log
+    log_dir: str = "logs"  # daily logs saved as logs/YYYY-MM-DD_hybrid.log
     poll_interval: float = 0.1
-    discovery_interval: float = 30.0    # reduced from 45s — catch more windows
+    discovery_interval: float = 30.0  # reduced from 45s — catch more windows
     book_cache_sec: float = 2.0
 
 

@@ -21,7 +21,6 @@ import asyncio
 import argparse
 import logging
 import logging.handlers
-import os
 import sys
 import time
 from datetime import datetime
@@ -42,6 +41,7 @@ from ui.dashboard import Dashboard
 
 # ── Logging ─────────────────────────────────────────────────────────
 
+
 def _setup_logging():
     """Configure logging with daily rotation into logs/ folder.
 
@@ -52,7 +52,7 @@ def _setup_logging():
     logs_dir = Path(CFG.log_dir)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    today    = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
     log_path = logs_dir / f"{today}_hybrid.log"
 
     file_handler = logging.handlers.TimedRotatingFileHandler(
@@ -97,14 +97,22 @@ async def run(is_live: bool, portfolio: float):
     log.info("=" * 60)
     log.info("  HYBRID ORACLE SNIPER — Strategy D")
     log.info("  Mode: %s  Portfolio: $%.2f", "LIVE" if is_live else "PAPER", portfolio)
-    log.info("  Entry window: T-%.0fs to T-%.0fs", CFG.snipe_entry_sec, CFG.snipe_exit_sec)
+    log.info(
+        "  Entry window: T-%.0fs to T-%.0fs", CFG.snipe_entry_sec, CFG.snipe_exit_sec
+    )
     log.info("  Price range: $%.2f - $%.2f", CFG.min_token_price, CFG.max_token_price)
-    log.info("  Min delta: %.3f%%  Min confidence: %.0f", CFG.min_delta_pct, CFG.min_confidence)
+    log.info(
+        "  Min delta: %.3f%%  Min confidence: %.0f",
+        CFG.min_delta_pct,
+        CFG.min_confidence,
+    )
     log.info("=" * 60)
     if telegram.is_configured():
         log.info("Telegram notifications: ENABLED")
     else:
-        log.warning("Telegram notifications: DISABLED — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+        log.warning(
+            "Telegram notifications: DISABLED — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env"
+        )
 
     # Initialize components
     db = Database(CFG.db_path)
@@ -123,10 +131,17 @@ async def run(is_live: bool, portfolio: float):
             portfolio = wallet_balance
             log.info("Wallet balance: $%.2f (using as portfolio)", portfolio)
         else:
-            log.warning("Could not fetch wallet balance, using --portfolio $%.2f", portfolio)
+            log.warning(
+                "Could not fetch wallet balance, using --portfolio $%.2f", portfolio
+            )
 
     risk = RiskManager(db, portfolio)
     dash = Dashboard(db, feeds, markets, risk, executor, is_live)
+    verifier = executor.verifier  # shared CapitalVerifier instance
+
+    # Opening portfolio snapshot
+    clob_balance = executor.get_wallet_balance() if is_live else None
+    verifier.snapshot(portfolio, "bot_start", clob_balance)
 
     # Start feed tasks
     feeds._running = True
@@ -156,15 +171,30 @@ async def run(is_live: bool, portfolio: float):
     # while the bot was offline (crash, restart, manual stop).
     if is_live:
         log.info("Startup: scanning for unredeemed winning positions...")
-        _s_count, _s_usdc, _s_losses = await redeem.redeem_all_async()
+        _s_count, _s_usdc, _s_losses, _s_cancelled = await redeem.redeem_all_async()
+        for _cid in _s_cancelled:
+            _pnl_delta = db.correct_trade_to_cancelled(_cid)
+            if _pnl_delta is not None:
+                risk.update_portfolio(_pnl_delta)
+                log.warning(
+                    "Startup: market CANCELLED for conditionId=%s "
+                    "(portfolio adjusted $%+.4f → $%.2f)",
+                    _cid[:18],
+                    _pnl_delta,
+                    risk.portfolio,
+                )
         for _cid in _s_losses:
             # Startup: wallet balance already reflects these losses — no portfolio adjustment.
             if db.correct_trade_to_loss(_cid) is not None:
-                log.info("Startup: corrected false-WIN to LOSS for conditionId=%s", _cid[:18])
+                log.info(
+                    "Startup: corrected false-WIN to LOSS for conditionId=%s", _cid[:18]
+                )
         if _s_usdc > 0:
             executor.sync_balance()
             await telegram.notify_redeemed(_s_count, _s_usdc)
-            log.info("Startup redemption: %d position(s) $%.4f USDC.e", _s_count, _s_usdc)
+            log.info(
+                "Startup redemption: %d position(s) $%.4f USDC.e", _s_count, _s_usdc
+            )
         elif _s_count > 0:
             executor.sync_balance()
 
@@ -177,21 +207,22 @@ async def run(is_live: bool, portfolio: float):
     # as redeemable, so we retry every 45s until actual USDC.e is received.
     # Note: on-chain oracle (payoutNumerators) can legitimately take 1-2+ hours
     # to settle — the queue must survive the full oracle dispute window.
-    _redeem_pending_ts: float = 0.0       # 0 = no pending redemption
+    _redeem_pending_ts: float = 0.0  # 0 = no pending redemption
     _last_redeem_attempt_ts: float = 0.0  # last time we called redeem_all
-    _REDEEM_RETRY_INTERVAL = 45.0         # seconds between retry attempts (was 90s)
-    _REDEEM_MAX_WAIT = 14400.0            # stop queue after 4 hours (was 20 min)
-    _REDEEM_SLOW_ALERT_SEC = 3600.0       # Telegram alert if still waiting at 1 hour
-    _redeem_slow_alerted: bool = False    # ensures 1-hour alert fires only once
+    _REDEEM_RETRY_INTERVAL = 45.0  # seconds between retry attempts (was 90s)
+    _REDEEM_MAX_WAIT = 14400.0  # stop queue after 4 hours (was 20 min)
+    _REDEEM_SLOW_ALERT_SEC = 3600.0  # Telegram alert if still waiting at 1 hour
+    _redeem_slow_alerted: bool = False  # ensures 1-hour alert fires only once
 
     # Periodic scan catches orphaned wins regardless of bot-computed PnL
     # or whether a new win triggers the queue (bot restart, oracle delay, etc).
     # Initialized to now so it doesn't fire immediately on the first loop
     # iteration — startup scan above already covered any pending positions.
-    _PERIODIC_REDEEM_INTERVAL = 900.0     # scan every 15 min unconditionally
+    _PERIODIC_REDEEM_INTERVAL = 900.0  # scan every 15 min unconditionally
     _last_periodic_redeem_ts: float = time.time()
     _last_status_log_ts: float = 0.0
     _STATUS_LOG_INTERVAL = 60.0  # log oracle status every 60s
+    _kill_switch_actioned: bool = False  # cancel + notify fires only once
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
@@ -210,12 +241,18 @@ async def run(is_live: bool, portfolio: float):
                                 if cur > 0:
                                     d = (cur - op) / op * 100
                                     delta_vals.append(f"{d:+.4f}%")
-                        delta_str = ", ".join(delta_vals) if delta_vals else "no openings"
+                        delta_str = (
+                            ", ".join(delta_vals) if delta_vals else "no openings"
+                        )
                         log.info(
                             "STATUS %s: CL=$%.2f stale=%.0fs markets=%d deltas=[%s] signals=%d/%d",
-                            a, feeds.chainlink[a], cl_stale,
-                            len(markets.tokens), delta_str,
-                            dash.signals_fired, dash.signals_seen,
+                            a,
+                            feeds.chainlink[a],
+                            cl_stale,
+                            len(markets.tokens),
+                            delta_str,
+                            dash.signals_fired,
+                            dash.signals_seen,
                         )
 
                 # Rediscover markets periodically
@@ -225,7 +262,7 @@ async def run(is_live: bool, portfolio: float):
                 # Close expired positions + auto-redeem wins
                 closed = executor.close_expired()
                 for _, trade in closed:
-                    risk.update_portfolio(trade.pnl)
+                    risk.on_trade_closed(trade.pnl)
                     await telegram.notify_trade_closed(trade)
                     if trade.pnl > 0 and is_live:
                         # Queue redemption — positions may not be redeemable
@@ -245,18 +282,22 @@ async def run(is_live: bool, portfolio: float):
                     # Periodic scan will redeem automatically once oracle settles.
                     if not _redeem_slow_alerted and waited >= _REDEEM_SLOW_ALERT_SEC:
                         _redeem_slow_alerted = True
-                        log.warning("Redemption still pending after %.0fm — oracle has not settled yet. "
-                                    "Position is safe. Periodic scan will retry every 15 min.",
-                                    waited / 60)
+                        log.warning(
+                            "Redemption still pending after %.0fm — oracle has not settled yet. "
+                            "Position is safe. Periodic scan will retry every 15 min.",
+                            waited / 60,
+                        )
                         await telegram.notify_oracle_slow(waited)
 
                     if waited >= _REDEEM_MAX_WAIT:
                         # Queue has been active for 4 hours — hand off to periodic scan.
                         # The periodic scan will continue retrying every 15 min indefinitely.
-                        log.warning("Redemption queue cleared after %.0fh — "
-                                    "periodic scan will continue retrying every 15 min. "
-                                    "Run redeem_now.py to force immediately.",
-                                    waited / 3600)
+                        log.warning(
+                            "Redemption queue cleared after %.0fh — "
+                            "periodic scan will continue retrying every 15 min. "
+                            "Run redeem_now.py to force immediately.",
+                            waited / 3600,
+                        )
                         _redeem_pending_ts = 0.0
                         _last_redeem_attempt_ts = 0.0
                         _redeem_slow_alerted = False
@@ -265,7 +306,32 @@ async def run(is_live: bool, portfolio: float):
                         # Sync periodic timer so the two callers don't double-fire
                         # when their intervals happen to align on the same cycle.
                         _last_periodic_redeem_ts = now
-                        count, total_usdc, lost_cids = await redeem.redeem_all_async()
+                        (
+                            count,
+                            total_usdc,
+                            lost_cids,
+                            cancelled_cids,
+                        ) = await redeem.redeem_all_async()
+                        for _cid in cancelled_cids:
+                            _pnl_delta = db.correct_trade_to_cancelled(_cid)
+                            if _pnl_delta is not None:
+                                outcome = (
+                                    "WIN_CANCEL" if _pnl_delta < 0 else "LOSS_CANCEL"
+                                )
+                                verifier.verify_win_cancel(
+                                    _cid, -_pnl_delta, 0
+                                ) if _pnl_delta < 0 else verifier.verify_loss_cancel(
+                                    _cid, -_pnl_delta, 0
+                                )
+                                risk.update_portfolio(_pnl_delta)
+                                log.warning(
+                                    "%s: market voided conditionId=%s "
+                                    "(portfolio adjusted $%+.4f → $%.2f)",
+                                    outcome,
+                                    _cid[:18],
+                                    _pnl_delta,
+                                    risk.portfolio,
+                                )
                         for _cid in lost_cids:
                             _pnl_delta = db.correct_trade_to_loss(_cid)
                             if _pnl_delta is not None:
@@ -273,34 +339,73 @@ async def run(is_live: bool, portfolio: float):
                                 log.info(
                                     "Corrected false-WIN to LOSS: conditionId=%s "
                                     "(portfolio adjusted $%+.4f → $%.2f)",
-                                    _cid[:18], _pnl_delta, risk.portfolio,
+                                    _cid[:18],
+                                    _pnl_delta,
+                                    risk.portfolio,
                                 )
                         if count > 0:
                             loop = asyncio.get_running_loop()
                             await loop.run_in_executor(None, executor.sync_balance)
                         if total_usdc > 0:
-                            log.info("Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
-                                     count, total_usdc)
+                            log.info(
+                                "Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
+                                count,
+                                total_usdc,
+                            )
                             await telegram.notify_redeemed(count, total_usdc)
                             _redeem_pending_ts = 0.0
                             _last_redeem_attempt_ts = 0.0
                             _redeem_slow_alerted = False
+                            clob_post = executor.get_wallet_balance()
+                            verifier.snapshot(risk.portfolio, "after_redeem", clob_post)
                         elif count > 0:
-                            log.info("Redeem txs sent (%d) but no USDC.e Transfer yet — retrying in %.0fs",
-                                     count, _REDEEM_RETRY_INTERVAL)
+                            log.info(
+                                "Redeem txs sent (%d) but no USDC.e Transfer yet — retrying in %.0fs",
+                                count,
+                                _REDEEM_RETRY_INTERVAL,
+                            )
                         else:
-                            log.info("Waiting for Data API to index position "
-                                     "(waited %.0fs, retry in %.0fs)",
-                                     waited, _REDEEM_RETRY_INTERVAL)
+                            log.info(
+                                "Waiting for Data API to index position "
+                                "(waited %.0fs, retry in %.0fs)",
+                                waited,
+                                _REDEEM_RETRY_INTERVAL,
+                            )
 
                 # Periodic scan every 15 min — catches orphaned wins regardless
                 # of bot-computed PnL or queue state (bot restart, oracle delay,
                 # second win that became redeemable after the queue cleared).
-                if is_live and (now - _last_periodic_redeem_ts) >= _PERIODIC_REDEEM_INTERVAL:
+                if (
+                    is_live
+                    and (now - _last_periodic_redeem_ts) >= _PERIODIC_REDEEM_INTERVAL
+                ):
                     _last_periodic_redeem_ts = now
                     # Sync retry timer so pending queue doesn't also fire this cycle
                     _last_redeem_attempt_ts = now
-                    p_count, p_usdc, p_losses = await redeem.redeem_all_async()
+                    (
+                        p_count,
+                        p_usdc,
+                        p_losses,
+                        p_cancelled,
+                    ) = await redeem.redeem_all_async()
+                    for _cid in p_cancelled:
+                        _pnl_delta = db.correct_trade_to_cancelled(_cid)
+                        if _pnl_delta is not None:
+                            outcome = "WIN_CANCEL" if _pnl_delta < 0 else "LOSS_CANCEL"
+                            verifier.verify_win_cancel(
+                                _cid, -_pnl_delta, 0
+                            ) if _pnl_delta < 0 else verifier.verify_loss_cancel(
+                                _cid, -_pnl_delta, 0
+                            )
+                            risk.update_portfolio(_pnl_delta)
+                            log.warning(
+                                "Periodic %s: market voided conditionId=%s "
+                                "(portfolio adjusted $%+.4f → $%.2f)",
+                                outcome,
+                                _cid[:18],
+                                _pnl_delta,
+                                risk.portfolio,
+                            )
                     for _cid in p_losses:
                         _pnl_delta = db.correct_trade_to_loss(_cid)
                         if _pnl_delta is not None:
@@ -308,13 +413,18 @@ async def run(is_live: bool, portfolio: float):
                             log.info(
                                 "Periodic: corrected false-WIN to LOSS: conditionId=%s "
                                 "(portfolio adjusted $%+.4f → $%.2f)",
-                                _cid[:18], _pnl_delta, risk.portfolio,
+                                _cid[:18],
+                                _pnl_delta,
+                                risk.portfolio,
                             )
                     if p_usdc > 0:
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, executor.sync_balance)
-                        log.info("Periodic redeem: %d position(s) $%.4f USDC.e",
-                                 p_count, p_usdc)
+                        log.info(
+                            "Periodic redeem: %d position(s) $%.4f USDC.e",
+                            p_count,
+                            p_usdc,
+                        )
                         await telegram.notify_redeemed(p_count, p_usdc)
                         _redeem_pending_ts = 0.0
                         _last_redeem_attempt_ts = 0.0
@@ -324,14 +434,26 @@ async def run(is_live: bool, portfolio: float):
                     else:
                         log.info("Periodic check: no redeemable positions")
 
+                # Capital verifier pause gate
+                if verifier.trading_paused:
+                    log.critical(
+                        "CAPITAL VERIFIER: trading paused — "
+                        "run `python verify_capital.py --fix` to investigate"
+                    )
+                    live.update(dash.render())
+                    await asyncio.sleep(CFG.poll_interval)
+                    continue
+
                 # Risk check
                 can_trade, reason = risk.can_trade()
                 if not can_trade:
                     if risk.kill_switch and reason.startswith("kill switch"):
-                        # Priority 2: cancel open CLOB orders before halting
-                        executor.cancel_all_orders()
-                        await telegram.notify_kill_switch(
-                            reason, db.daily_pnl(), risk.portfolio)
+                        if not _kill_switch_actioned:
+                            _kill_switch_actioned = True
+                            executor.cancel_all_orders()
+                            await telegram.notify_kill_switch(
+                                reason, db.daily_pnl(), risk.portfolio
+                            )
                     live.update(dash.render())
                     await asyncio.sleep(CFG.poll_interval)
                     continue
@@ -388,17 +510,15 @@ async def run(is_live: bool, portfolio: float):
                             continue
 
                         delta = feeds.oracle_delta(trade.asset, trade.window_ts)
-                        expected_up = (trade.direction == "UP")
-                        delta_reversed = (
-                            (expected_up and delta < 0) or
-                            (not expected_up and delta > 0)
+                        expected_up = trade.direction == "UP"
+                        delta_reversed = (expected_up and delta < 0) or (
+                            not expected_up and delta > 0
                         )
                         # Strategy 2: delta collapse — oracle move faded to
                         # noise level without reversing direction. The edge
                         # that justified entry no longer exists.
                         delta_collapsed = (
-                            not delta_reversed
-                            and abs(delta) < CFG.min_delta_pct
+                            not delta_reversed and abs(delta) < CFG.min_delta_pct
                         )
 
                         should_exit = delta_reversed or delta_collapsed
@@ -412,8 +532,7 @@ async def run(is_live: bool, portfolio: float):
                             # exit_reversal_hold_sec.
                             effective_hold = max(
                                 2.0,
-                                min(CFG.exit_reversal_hold_sec,
-                                    ttl_pos * 0.20),
+                                min(CFG.exit_reversal_hold_sec, ttl_pos * 0.20),
                             )
                             first_rev = executor._reversal_first_ts.get(wkey)
                             reason = "reversal" if delta_reversed else "collapse"
@@ -422,23 +541,31 @@ async def run(is_live: bool, portfolio: float):
                                 log.debug(
                                     "EXIT WATCH %s [%s] delta=%.4f%% "
                                     "— holding %.1fs (ttl=%.0fs)",
-                                    wkey, reason, delta, effective_hold, ttl_pos,
+                                    wkey,
+                                    reason,
+                                    delta,
+                                    effective_hold,
+                                    ttl_pos,
                                 )
                             elif now - first_rev >= effective_hold:
                                 log.warning(
                                     "EXIT CONFIRMED %s [%s]: delta=%.4f%% "
                                     "held %.1fs — attempting exit",
-                                    wkey, reason, delta, now - first_rev,
+                                    wkey,
+                                    reason,
+                                    delta,
+                                    now - first_rev,
                                 )
                                 sold = executor.sell_position(wkey, token_id, trade)
                                 if sold:
-                                    risk.update_portfolio(trade.pnl)
+                                    risk.on_trade_closed(trade.pnl)
                                     await telegram.notify_trade_closed(trade)
                         else:
                             # Delta healthy — clear exit watch timer
                             if wkey in executor._reversal_first_ts:
-                                log.debug("EXIT WATCH CLEARED %s: delta=%.4f%%",
-                                          wkey, delta)
+                                log.debug(
+                                    "EXIT WATCH CLEARED %s: delta=%.4f%%", wkey, delta
+                                )
                                 executor._reversal_first_ts.pop(wkey, None)
 
                 live.update(dash.render())
@@ -451,10 +578,20 @@ async def run(is_live: bool, portfolio: float):
         for t in tasks:
             t.cancel()
 
+        # Closing portfolio snapshot
+        clob_stop = executor.get_wallet_balance() if is_live else None
+        verifier.snapshot(risk.portfolio, "bot_stop", clob_stop)
+
         # Final stats
         st = db.lifetime_stats()
-        log.info("FINAL: P&L=$%+.4f WR=%.1f%% (%d/%d) Exp=$%+.4f",
-                 st["pnl"], st["wr"], st["wins"], st["total"], st["expectancy"])
+        log.info(
+            "FINAL: P&L=$%+.4f WR=%.1f%% (%d/%d) Exp=$%+.4f",
+            st["pnl"],
+            st["wr"],
+            st["wins"],
+            st["total"],
+            st["expectancy"],
+        )
         try:
             await telegram.notify_bot_stop(st, risk.portfolio)
         except Exception:

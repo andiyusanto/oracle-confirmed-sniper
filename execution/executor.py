@@ -16,6 +16,7 @@ import uuid
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Optional
 
+from core.capital_verifier import CapitalVerifier
 from core.config import CFG
 from core.database import Database
 from core.models import Signal, Trade
@@ -27,9 +28,13 @@ log = logging.getLogger("hybrid.executor")
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
-        ApiCreds, OrderArgs, MarketOrderArgs, OrderType,
-        PartialCreateOrderOptions, BalanceAllowanceParams, AssetType,
+        ApiCreds,
+        OrderArgs,
+        PartialCreateOrderOptions,
+        BalanceAllowanceParams,
+        AssetType,
     )
+
     HAS_CLOB = True
 except ImportError:
     HAS_CLOB = False
@@ -43,8 +48,9 @@ class Executor:
         self.open_positions: dict[str, Trade] = {}
         self._last_order_ts = 0.0
         self._clob: Optional[object] = None
+        self.verifier = CapitalVerifier(db)
         # Reversal exit tracking
-        self._open_token_ids: dict[str, str] = {}     # wkey → token_id
+        self._open_token_ids: dict[str, str] = {}  # wkey → token_id
         self._reversal_first_ts: dict[str, float] = {}  # wkey → first reversal ts
 
         # Circuit breaker for fatal API errors (geoblock, auth failure)
@@ -63,6 +69,7 @@ class Executor:
             return
         try:
             from py_clob_client.constants import POLYGON
+
             creds = ApiCreds(
                 api_key=CFG.api_key,
                 api_secret=CFG.api_secret,
@@ -136,7 +143,7 @@ class Executor:
             raw_balance = None
             if isinstance(resp, dict):
                 raw_balance = resp.get("balance", 0)
-            elif hasattr(resp, 'balance'):
+            elif hasattr(resp, "balance"):
                 raw_balance = resp.balance
 
             if raw_balance is None:
@@ -169,8 +176,9 @@ class Executor:
         # ── Paper slippage modeling ───────────────────────────────────
         entry_price = signal.entry_price
         if not self.is_live:
-            slippage = self._estimate_slippage(signal.time_remaining,
-                                                signal.entry_price)
+            slippage = self._estimate_slippage(
+                signal.time_remaining, signal.entry_price
+            )
             entry_price = min(entry_price + slippage, 0.99)
 
         trade = Trade(
@@ -203,12 +211,18 @@ class Executor:
                 self.db.save_trade(trade)
                 return None
         else:
-            log.info("PAPER: %s %s %s @ $%.4f (raw=$%.4f slip=$%.4f) "
-                     "size=$%.2f delta=%.4f%%",
-                     trade.asset, trade.direction, trade.side,
-                     trade.entry_price, signal.entry_price,
-                     entry_price - signal.entry_price,
-                     trade.size_usdc, trade.oracle_delta)
+            log.info(
+                "PAPER: %s %s %s @ $%.4f (raw=$%.4f slip=$%.4f) "
+                "size=$%.2f delta=%.4f%%",
+                trade.asset,
+                trade.direction,
+                trade.side,
+                trade.entry_price,
+                signal.entry_price,
+                entry_price - signal.entry_price,
+                trade.size_usdc,
+                trade.oracle_delta,
+            )
 
         self.db.save_trade(trade)
         wkey = f"{trade.asset}_{trade.window_ts}"
@@ -239,8 +253,11 @@ class Executor:
             )
 
             if not asks:
-                log.warning("LIVE SKIP: no asks in order book for %s %s",
-                            signal.token.asset, signal.token.direction)
+                log.warning(
+                    "LIVE SKIP: no asks in order book for %s %s",
+                    signal.token.asset,
+                    signal.token.direction,
+                )
                 return False
 
             best_ask = asks[0]
@@ -249,24 +266,36 @@ class Executor:
             # Below min_token_price → near-worthless token, likely wrong
             # token_id or severely stale book cache — do not buy.
             if best_ask < CFG.min_token_price:
-                log.warning("LIVE SKIP: best ask $%.4f < min $%.2f "
-                            "(possible wrong token or stale cache) for %s %s",
-                            best_ask, CFG.min_token_price,
-                            signal.token.asset, signal.token.direction)
+                log.warning(
+                    "LIVE SKIP: best ask $%.4f < min $%.2f "
+                    "(possible wrong token or stale cache) for %s %s",
+                    best_ask,
+                    CFG.min_token_price,
+                    signal.token.asset,
+                    signal.token.direction,
+                )
                 return False
 
             if best_ask > CFG.max_token_price:
-                log.warning("LIVE SKIP: best ask $%.4f > max $%.2f "
-                            "(book already priced in) for %s %s",
-                            best_ask, CFG.max_token_price,
-                            signal.token.asset, signal.token.direction)
+                log.warning(
+                    "LIVE SKIP: best ask $%.4f > max $%.2f "
+                    "(book already priced in) for %s %s",
+                    best_ask,
+                    CFG.max_token_price,
+                    signal.token.asset,
+                    signal.token.direction,
+                )
                 return False
 
             if best_ask > signal.entry_price + 0.10:
-                log.warning("LIVE SKIP: best ask $%.4f >> signal entry $%.4f "
-                            "(stale book data) for %s %s",
-                            best_ask, signal.entry_price,
-                            signal.token.asset, signal.token.direction)
+                log.warning(
+                    "LIVE SKIP: best ask $%.4f >> signal entry $%.4f "
+                    "(stale book data) for %s %s",
+                    best_ask,
+                    signal.entry_price,
+                    signal.token.asset,
+                    signal.token.direction,
+                )
                 return False
 
             # Step 3: Get tick size
@@ -274,10 +303,10 @@ class Executor:
 
             # Step 4: Precision-safe price + size (Decimal, ROUND_DOWN)
             # Prevents float artifacts like 4.9999... rounding to 4.99 < min_shares
-            price_d  = float(
+            price_d = float(
                 Decimal(str(best_ask)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
             )
-            shares   = float(
+            shares = float(
                 Decimal(str(signal.size_usdc / best_ask)).quantize(
                     Decimal("0.01"), rounding=ROUND_DOWN
                 )
@@ -292,12 +321,23 @@ class Executor:
                     )
                 )
                 if bumped > CFG.live_max_usdc:
-                    log.warning("LIVE SKIP: %.2f shares < minimum %.0f and "
-                                "bump $%.2f > live_max $%.2f",
-                                shares, CFG.min_shares, bumped, CFG.live_max_usdc)
+                    log.warning(
+                        "LIVE SKIP: %.2f shares < minimum %.0f and "
+                        "bump $%.2f > live_max $%.2f",
+                        shares,
+                        CFG.min_shares,
+                        bumped,
+                        CFG.live_max_usdc,
+                    )
                     return False
-                log.info("LIVE BUMP: %.2f→%.0f shares, size $%.2f→$%.2f @ $%.4f",
-                         shares, CFG.min_shares, signal.size_usdc, bumped, best_ask)
+                log.info(
+                    "LIVE BUMP: %.2f→%.0f shares, size $%.2f→$%.2f @ $%.4f",
+                    shares,
+                    CFG.min_shares,
+                    signal.size_usdc,
+                    bumped,
+                    best_ask,
+                )
                 shares = CFG.min_shares
 
             # fee_rate_bps must match the market's required fee rate exactly.
@@ -322,20 +362,26 @@ class Executor:
             order_id = None
             if resp and isinstance(resp, dict):
                 order_id = resp.get("orderID") or resp.get("id")
-            elif resp and hasattr(resp, 'orderID'):
+            elif resp and hasattr(resp, "orderID"):
                 order_id = resp.orderID
 
             if order_id:
                 trade.entry_price = price_d
-                trade.size_usdc   = float(
+                trade.size_usdc = float(
                     Decimal(str(shares * price_d)).quantize(
                         Decimal("0.01"), rounding=ROUND_DOWN
                     )
                 )
-                log.info("LIVE FILLED: %s %s %s @ $%.4f size=$%.2f "
-                         "shares=%.2f order=%s",
-                         trade.asset, trade.direction, trade.side,
-                         price_d, trade.size_usdc, shares, order_id)
+                log.info(
+                    "LIVE FILLED: %s %s %s @ $%.4f size=$%.2f shares=%.2f order=%s",
+                    trade.asset,
+                    trade.direction,
+                    trade.side,
+                    price_d,
+                    trade.size_usdc,
+                    shares,
+                    order_id,
+                )
                 return True
             else:
                 log.warning("LIVE ORDER no fill: %s", resp)
@@ -348,21 +394,31 @@ class Executor:
             if "not enough balance" in err_str or "allowance" in err_str:
                 log.warning(
                     "LIVE SKIP: insufficient CLOB balance — syncing ledger "
-                    "(redeem may not have been followed by balance sync)")
+                    "(redeem may not have been followed by balance sync)"
+                )
                 self.sync_balance()
                 return False
 
             # Circuit breaker: detect fatal errors that won't resolve by retrying
-            if any(fatal in err_str for fatal in [
-                "geoblock", "restricted in your region", "403",
-                "unauthorized", "invalid api key", "forbidden",
-            ]):
+            if any(
+                fatal in err_str
+                for fatal in [
+                    "geoblock",
+                    "restricted in your region",
+                    "403",
+                    "unauthorized",
+                    "invalid api key",
+                    "forbidden",
+                ]
+            ):
                 self._circuit_open = True
                 self._circuit_reason = str(e)
                 self._circuit_ts = time.time()
                 log.critical(
                     "CIRCUIT BREAKER OPEN: %s — All live orders blocked. "
-                    "Fix the issue and restart the bot.", e)
+                    "Fix the issue and restart the bot.",
+                    e,
+                )
                 return False
 
             # Transient server-side errors — not fatal, outer loop retries
@@ -370,14 +426,21 @@ class Executor:
             # Do NOT retry inside this method: the order may have been
             # partially processed on Polymarket's side, and re-submitting
             # the same signed order risks a duplicate fill.
-            if any(t in err_str for t in [
-                "status_code=500", "status_code=502",
-                "status_code=503", "status_code=504",
-                "could not run the execution",
-                "internal server error",
-                "connection reset", "connection aborted",
-                "read timeout", "remote end closed",
-            ]):
+            if any(
+                t in err_str
+                for t in [
+                    "status_code=500",
+                    "status_code=502",
+                    "status_code=503",
+                    "status_code=504",
+                    "could not run the execution",
+                    "internal server error",
+                    "connection reset",
+                    "connection aborted",
+                    "read timeout",
+                    "remote end closed",
+                ]
+            ):
                 log.warning("LIVE ORDER transient error (outer loop will retry): %s", e)
                 return False
 
@@ -423,7 +486,9 @@ class Executor:
             if best_bid < 0.10:
                 log.warning(
                     "REVERSAL EXIT: best bid $%.4f too low to sell %s "
-                    "— letting close_expired handle it", best_bid, wkey,
+                    "— letting close_expired handle it",
+                    best_bid,
+                    wkey,
                 )
                 return False
 
@@ -470,23 +535,29 @@ class Executor:
                 del self.open_positions[wkey]
                 self._open_token_ids.pop(wkey, None)
                 self._reversal_first_ts.pop(wkey, None)
+                self.verifier.verify_trade_close(trade)
                 log.warning(
                     "REVERSAL EXIT: %s sold %.2f shares @ $%.4f "
                     "(entry $%.4f) pnl=$%+.4f order=%s",
-                    wkey, shares, price_d, trade.entry_price, pnl, order_id,
+                    wkey,
+                    shares,
+                    price_d,
+                    trade.entry_price,
+                    pnl,
+                    order_id,
                 )
                 return True
             else:
-                log.warning("REVERSAL EXIT: sell order rejected for %s — %s",
-                            wkey, resp)
+                log.warning(
+                    "REVERSAL EXIT: sell order rejected for %s — %s", wkey, resp
+                )
                 return False
 
         except Exception as e:
             log.error("REVERSAL EXIT error for %s: %s", wkey, e)
             return False
 
-    def _estimate_slippage(self, time_remaining: float,
-                           book_mid: float) -> float:
+    def _estimate_slippage(self, time_remaining: float, book_mid: float) -> float:
         """Model slippage for paper trades."""
         if time_remaining <= 5:
             time_slip = 0.015
@@ -513,22 +584,23 @@ class Executor:
         for wkey, trade in list(self.open_positions.items()):
             # Bug 1 fix: use stored duration (5m=300, 15m=900).
             # getattr fallback handles trades opened before this field existed.
-            dur_sec    = getattr(trade, 'duration_sec', 300)
+            dur_sec = getattr(trade, "duration_sec", 300)
             window_end = trade.window_ts + dur_sec
 
             # Phase 1: snapshot final delta in last 5s
-            if not getattr(trade, '_final_delta_captured', False):
+            if not getattr(trade, "_final_delta_captured", False):
                 if window_end - 5 <= now <= window_end + 1:
-                    delta = self.feeds.oracle_delta(
-                        trade.asset, trade.window_ts)
+                    delta = self.feeds.oracle_delta(trade.asset, trade.window_ts)
                     trade._final_delta = delta
-                    trade._final_cl_price = self.feeds.chainlink.get(
-                        trade.asset, 0)
-                    trade._final_bn_price = self.feeds.binance.get(
-                        trade.asset, 0)
+                    trade._final_cl_price = self.feeds.chainlink.get(trade.asset, 0)
+                    trade._final_bn_price = self.feeds.binance.get(trade.asset, 0)
                     trade._final_delta_captured = True
-                    log.debug("SNAPSHOT %s delta=%.4f%% cl=$%.2f",
-                              wkey, delta, trade._final_cl_price)
+                    log.debug(
+                        "SNAPSHOT %s delta=%.4f%% cl=$%.2f",
+                        wkey,
+                        delta,
+                        trade._final_cl_price,
+                    )
 
             # Phase 2: close after window + 3s buffer
             if now < window_end + 3:
@@ -547,24 +619,33 @@ class Executor:
             self._reversal_first_ts.pop(wkey, None)
 
             tag = "WIN" if pnl > 0 else "LOSS"
-            log.info("[%s] %s %s pnl=$%+.4f (delta=%.4f%% entry=$%.3f "
-                     "snap=%s)",
-                     tag, trade.asset, trade.direction, pnl,
-                     trade.oracle_delta, trade.entry_price,
-                     "yes" if getattr(trade, '_final_delta_captured', False)
-                     else "no")
+            log.info(
+                "[%s] %s %s pnl=$%+.4f (delta=%.4f%% entry=$%.3f snap=%s)",
+                tag,
+                trade.asset,
+                trade.direction,
+                pnl,
+                trade.oracle_delta,
+                trade.entry_price,
+                "yes" if getattr(trade, "_final_delta_captured", False) else "no",
+            )
+
+            if self.is_live:
+                self.verifier.verify_trade_close(trade)
 
         return to_close
 
     def _compute_pnl(self, trade: Trade) -> float:
         """Compute P&L with proper fee handling."""
-        if getattr(trade, '_final_delta_captured', False):
+        if getattr(trade, "_final_delta_captured", False):
             final_delta = trade._final_delta
         else:
-            final_delta = self.feeds.oracle_delta(
-                trade.asset, trade.window_ts)
-            log.warning("Using live delta for %s_%d (snapshot missed)",
-                        trade.asset, trade.window_ts)
+            final_delta = self.feeds.oracle_delta(trade.asset, trade.window_ts)
+            log.warning(
+                "Using live delta for %s_%d (snapshot missed)",
+                trade.asset,
+                trade.window_ts,
+            )
 
         if trade.direction == "UP":
             won = final_delta > 0

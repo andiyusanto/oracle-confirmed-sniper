@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(python3 -m py_compile core/telegram.py)",
-      "Bash(python3 -m ruff check core/telegram.py)"
+      "Bash(python3 -m ruff check core/telegram.py)",
+      "Bash(sort -t'/' -k6)",
+      "Bash(sqlite3 /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/hybrid_trades.db \".tables\")",
+      "Bash(python3 -c ' *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(ruff check *)",
+      "Bash(ruff format *)",
+      "Bash(python3 verify_capital.py --fix)",
+      "Bash(chmod 664 hybrid_trades.db)",
+      "Bash(sudo chmod *)"
     ]
   }
 }

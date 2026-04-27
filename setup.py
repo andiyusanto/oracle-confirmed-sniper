@@ -30,9 +30,9 @@ def run_setup():
     # ── Read from pre_setup.env ───────────────────────────────────
     if not os.path.exists(PRE_SETUP_FILE):
         print(f"❌ '{PRE_SETUP_FILE}' not found.")
-        print(f"   Create it with:")
-        print(f"     POLY_PRIVATE_KEY=0x...")
-        print(f"     POLY_FUNDER_ADDRESS=0x...")
+        print("   Create it with:")
+        print("     POLY_PRIVATE_KEY=0x...")
+        print("     POLY_FUNDER_ADDRESS=0x...")
         sys.exit(1)
 
     pre = dotenv_values(PRE_SETUP_FILE)
@@ -76,6 +76,7 @@ def run_setup():
 
     # ── Re-initialize client with full Level 2 credentials ───────
     from py_clob_client.clob_types import ApiCreds
+
     client = ClobClient(
         host="https://clob.polymarket.com",
         key=pk,
@@ -104,8 +105,16 @@ def run_setup():
         resp = client.get_balance_allowance(
             params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         )
-        raw_balance = resp.get("balance", 0) if isinstance(resp, dict) else getattr(resp, "balance", 0)
-        raw_allowance = resp.get("allowance", 0) if isinstance(resp, dict) else getattr(resp, "allowance", 0)
+        raw_balance = (
+            resp.get("balance", 0)
+            if isinstance(resp, dict)
+            else getattr(resp, "balance", 0)
+        )
+        raw_allowance = (
+            resp.get("allowance", 0)
+            if isinstance(resp, dict)
+            else getattr(resp, "allowance", 0)
+        )
         balance = float(raw_balance or 0)
         allowance = float(raw_allowance or 0)
         if balance > 1_000_000:
@@ -116,14 +125,16 @@ def run_setup():
         print(f"  Allowance: ${allowance:.2f} USDC")
         if allowance == 0:
             print("  ❌ Allowance is still 0 — the bot will not be able to trade!")
-            print("     Try running setup.py again, or approve manually on app.polymarket.com")
+            print(
+                "     Try running setup.py again, or approve manually on app.polymarket.com"
+            )
         else:
             print("  ✅ Allowance confirmed. Bot is ready to trade.")
     except Exception as e:
         print(f"  ⚠️  Could not verify: {e}")
 
     print(f"\n✅ Done! Credentials written to '{OUTPUT_FILE}'")
-    print(f"   You can now run: python bot.py")
+    print("   You can now run: python bot.py")
 
 
 if __name__ == "__main__":

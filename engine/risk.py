@@ -62,8 +62,12 @@ class RiskManager:
     def check_concurrent(self, open_count: int) -> bool:
         return open_count < CFG.max_concurrent_positions
 
-    def on_trade(self, pnl: float = 0):
+    def on_trade(self):
+        """Record a new trade opening (count only; P&L unknown until close)."""
         self._daily_count += 1
+
+    def on_trade_closed(self, pnl: float):
+        """Update consecutive-loss streak and portfolio after a position closes."""
         self.portfolio = max(1.0, self.portfolio + pnl)
         if pnl < 0:
             self._consecutive_losses += 1
@@ -72,10 +76,16 @@ class RiskManager:
                 self._lockout_until = time.time() + lockout_sec
                 log.warning(
                     "LOCKOUT: %d consecutive losses — pausing %d min",
-                    self._consecutive_losses, CFG.consec_loss_lockout_min,
+                    self._consecutive_losses,
+                    CFG.consec_loss_lockout_min,
                 )
         else:
             self._consecutive_losses = 0
 
     def update_portfolio(self, pnl: float):
+        """Adjust portfolio without touching the consecutive-loss streak.
+
+        Used for external corrections (startup redemption scan, periodic
+        redeem) where the trade was already counted at close time.
+        """
         self.portfolio = max(1.0, self.portfolio + pnl)

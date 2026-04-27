@@ -35,14 +35,15 @@ class HybridEngine:
     def __init__(self, feeds: PriceFeeds):
         self.feeds = feeds
         self._traded_windows: set[str] = set()
-        self._asset_fill_ts: dict[str, float] = {}   # asset → last fill timestamp
+        self._asset_fill_ts: dict[str, float] = {}  # asset → last fill timestamp
         # Consecutive-pass gate: token_id → timestamp of first pass
         self._first_pass_ts: dict[str, float] = {}
         # Rate-limited gate-3 diagnostic log: asset → last log timestamp
         self._gate3_log_ts: dict[str, float] = {}
 
-    def evaluate(self, token: Token, portfolio: float,
-                 is_live: bool = False) -> Optional[Signal]:
+    def evaluate(
+        self, token: Token, portfolio: float, is_live: bool = False
+    ) -> Optional[Signal]:
         """Evaluate a single token for a snipe opportunity."""
         now = time.time()
         ttl = token.end_ts - now
@@ -76,11 +77,17 @@ class HybridEngine:
             last_g3 = self._gate3_log_ts.get(asset, 0.0)
             if now - last_g3 >= 60.0:
                 self._gate3_log_ts[asset] = now
-                has_opening = bool(self.feeds.openings.get(asset, {}).get(token.window_ts))
+                has_opening = bool(
+                    self.feeds.openings.get(asset, {}).get(token.window_ts)
+                )
                 log.info(
                     "GATE3 SKIP %s: delta=%.4f%% < min=%.4f%% "
                     "(opening_captured=%s ttl=%.0fs)",
-                    asset, delta, CFG.min_delta_pct, has_opening, ttl,
+                    asset,
+                    delta,
+                    CFG.min_delta_pct,
+                    has_opening,
+                    ttl,
                 )
             return None
 
@@ -92,7 +99,10 @@ class HybridEngine:
         if stale > CFG.cl_staleness_hard_sec and bn_stale > 30.0:
             log.info(
                 "STALE SKIP %s: CL=%.0fs old, BN=%.0fs old — both feeds stale, ttl=%.0fs",
-                asset, stale, bn_stale, ttl,
+                asset,
+                stale,
+                bn_stale,
+                ttl,
             )
             return None
 
@@ -120,7 +130,9 @@ class HybridEngine:
             if (delta > 0) != (past_delta_20 > 0):
                 log.debug(
                     "MOMENTUM SKIP %s: reversed vs 20s ago (was %.4f%%, now %.4f%%)",
-                    asset, past_delta_20, delta,
+                    asset,
+                    past_delta_20,
+                    delta,
                 )
                 return None
 
@@ -129,7 +141,9 @@ class HybridEngine:
             if (delta > 0) != (past_delta_30 > 0):
                 log.debug(
                     "MOMENTUM SKIP %s: reversed vs 30s ago (was %.4f%%, now %.4f%%)",
-                    asset, past_delta_30, delta,
+                    asset,
+                    past_delta_30,
+                    delta,
                 )
                 return None
 
@@ -142,7 +156,9 @@ class HybridEngine:
                 if abs_delta < abs(past_delta_20) * 0.50:
                     log.debug(
                         "MOMENTUM SKIP %s: delta fading >20%% (was %.4f%%, now %.4f%%)",
-                        asset, past_delta_20, delta,
+                        asset,
+                        past_delta_20,
+                        delta,
                     )
                     return None
 
@@ -154,25 +170,27 @@ class HybridEngine:
         #    settlement causes a ghost even when snapshot looks correct.
         #    Require minimum TTL when delta has no confirmed history.
         delta_is_unconfirmed = (
-            (past_delta_20 == 0.0 or abs(past_delta_20) < CFG.min_delta_pct) and
-            (past_delta_30 == 0.0 or abs(past_delta_30) < CFG.min_delta_pct)
-        )
+            past_delta_20 == 0.0 or abs(past_delta_20) < CFG.min_delta_pct
+        ) and (past_delta_30 == 0.0 or abs(past_delta_30) < CFG.min_delta_pct)
         if delta_is_unconfirmed and ttl < CFG.min_ttl_unconfirmed_sec:
             log.debug(
                 "UNCONFIRMED SKIP %s: delta appeared suddenly "
                 "(20s=%.4f%%, 30s=%.4f%%), ttl=%.0fs < min=%.0fs",
-                asset, past_delta_20, past_delta_30, ttl,
+                asset,
+                past_delta_20,
+                past_delta_30,
+                ttl,
                 CFG.min_ttl_unconfirmed_sec,
             )
             return None
 
         # ── GATE 4: Tiered timing based on delta strength ─────────
         if abs_delta >= CFG.extreme_delta_pct:
-            max_entry_sec = CFG.snipe_entry_sec       # T-60s
+            max_entry_sec = CFG.snipe_entry_sec  # T-60s
         elif abs_delta >= CFG.strong_delta_pct:
-            max_entry_sec = CFG.snipe_entry_strong     # T-45s
+            max_entry_sec = CFG.snipe_entry_strong  # T-45s
         else:
-            max_entry_sec = CFG.snipe_entry_weak        # T-25s
+            max_entry_sec = CFG.snipe_entry_weak  # T-25s
 
         # UP: block outside [snipe_exit_sec, max_entry_sec]
         # DOWN: TTL floor is handled in GATE 4b (down_snipe_exit_sec is lower)
@@ -197,17 +215,29 @@ class HybridEngine:
             if not CFG.allow_down_direction:
                 return None
             if abs_delta < CFG.down_min_delta_pct:
-                log.debug("DOWN SKIP %s: delta=%.4f%% < down_min=%.4f%%",
-                          asset, delta, CFG.down_min_delta_pct)
+                log.debug(
+                    "DOWN SKIP %s: delta=%.4f%% < down_min=%.4f%%",
+                    asset,
+                    delta,
+                    CFG.down_min_delta_pct,
+                )
                 return None
-            if not self.feeds.all_assets_trending_down(CFG.assets,
-                                                        CFG.down_min_delta_pct):
-                log.debug("DOWN SKIP %s: not all assets trending DOWN (single-asset noise)",
-                          asset)
+            if not self.feeds.all_assets_trending_down(
+                CFG.assets, CFG.down_min_delta_pct
+            ):
+                log.debug(
+                    "DOWN SKIP %s: not all assets trending DOWN (single-asset noise)",
+                    asset,
+                )
                 return None
             if ttl > CFG.down_snipe_entry_sec or ttl < CFG.down_snipe_exit_sec:
-                log.debug("DOWN SKIP %s: ttl=%.0fs outside DOWN window [%.0fs, %.0fs]",
-                          asset, ttl, CFG.down_snipe_exit_sec, CFG.down_snipe_entry_sec)
+                log.debug(
+                    "DOWN SKIP %s: ttl=%.0fs outside DOWN window [%.0fs, %.0fs]",
+                    asset,
+                    ttl,
+                    CFG.down_snipe_exit_sec,
+                    CFG.down_snipe_entry_sec,
+                )
                 return None
 
         # ── GATE 5: Oracle must agree with token direction ────────
@@ -215,8 +245,7 @@ class HybridEngine:
             return None
 
         # ── GATE 5b: Binance agreement check ─────────────────────
-        binance_agrees = self.feeds.binance_agrees(asset, oracle_says,
-                                                   token.window_ts)
+        binance_agrees = self.feeds.binance_agrees(asset, oracle_says, token.window_ts)
 
         # ── GATE 5c: Hard Binance gate for weak signals ───────────
         # Strong/extreme delta (≥ 0.05%) carry enough conviction that
@@ -225,13 +254,13 @@ class HybridEngine:
         # is current (< 30s) and disagrees with the oracle direction, the
         # two sources are in conflict — skip rather than guess.
         bn_age = time.time() - self.feeds.bn_ts.get(asset, 0)
-        if (not binance_agrees
-                and bn_age < 30.0
-                and abs_delta < CFG.strong_delta_pct):
+        if not binance_agrees and bn_age < 30.0 and abs_delta < CFG.strong_delta_pct:
             log.debug(
                 "BINANCE HARD GATE %s: weak delta=%.4f%% but Binance disagrees "
                 "(bn_age=%.0fs) — skipping",
-                asset, delta, bn_age,
+                asset,
+                delta,
+                bn_age,
             )
             return None
 
@@ -246,17 +275,22 @@ class HybridEngine:
         if token.book_spread > CFG.max_spread_pct:
             log.debug(
                 "SPREAD SKIP %s: spread=%.1f%% > max %.0f%%",
-                asset, token.book_spread * 100, CFG.max_spread_pct * 100,
+                asset,
+                token.book_spread * 100,
+                CFG.max_spread_pct * 100,
             )
             return None
 
         # ── GATE 7: Confidence scoring (adaptive threshold) ──────
-        confidence = self._score(delta, ttl, price, asset,
-                                 binance_agrees=binance_agrees)
+        confidence = self._score(
+            delta, ttl, price, asset, binance_agrees=binance_agrees
+        )
 
-        threshold = (CFG.min_confidence_strong
-                     if abs_delta >= CFG.strong_delta_pct
-                     else CFG.min_confidence)
+        threshold = (
+            CFG.min_confidence_strong
+            if abs_delta >= CFG.strong_delta_pct
+            else CFG.min_confidence
+        )
         if confidence < threshold:
             return None
 
@@ -268,11 +302,17 @@ class HybridEngine:
         fee_edge = price * _fee / (1 - _fee) * 100 + 1.0
         min_edge = max(CFG.min_edge_pct, fee_edge)
         if edge_pct < min_edge:
-            log.info(
+            log.debug(
                 "EDGE MISS %s %s @ $%.3f: edge=%.2f%% < min=%.2f%% "
                 "(fv=%.3f delta=%.4f%% ttl=%.0fs)",
-                asset, oracle_says, price, edge_pct, min_edge,
-                fair_value, delta, ttl,
+                asset,
+                oracle_says,
+                price,
+                edge_pct,
+                min_edge,
+                fair_value,
+                delta,
+                ttl,
             )
             # Weak signals (delta < strong_delta_pct): hard-block at fee_edge.
             # These have insufficient directional conviction to overcome fees.
@@ -294,14 +334,14 @@ class HybridEngine:
         # On second pass within consecutive_pass_window_sec: proceed.
         # Prune stale first-pass entries on every call.
         cutoff = now - CFG.consecutive_pass_window_sec * 2
-        self._first_pass_ts = {k: v for k, v in self._first_pass_ts.items()
-                               if v > cutoff}
+        self._first_pass_ts = {
+            k: v for k, v in self._first_pass_ts.items() if v > cutoff
+        }
 
         first_ts = self._first_pass_ts.get(token.token_id, 0.0)
         if first_ts == 0.0:
             self._first_pass_ts[token.token_id] = now
-            log.debug("PENDING %s: first pass recorded, awaiting confirmation",
-                      asset)
+            log.debug("PENDING %s: first pass recorded, awaiting confirmation", asset)
             return None
         elif now - first_ts > CFG.consecutive_pass_window_sec:
             # First pass expired (gap too large) — reset and wait again
@@ -312,34 +352,40 @@ class HybridEngine:
         del self._first_pass_ts[token.token_id]
 
         # ── Build signal ──────────────────────────────────────────
-        opening = self.feeds.openings.get(asset, {}).get(
-            token.window_ts, 0)
+        opening = self.feeds.openings.get(asset, {}).get(token.window_ts, 0)
         oracle = OracleState(
-            asset=asset, window_ts=token.window_ts,
+            asset=asset,
+            window_ts=token.window_ts,
             opening_price=opening,
             current_price=self.feeds.best_price(asset),
-            delta_pct=delta, oracle_says=oracle_says,
+            delta_pct=delta,
+            oracle_says=oracle_says,
             binance_agrees=binance_agrees,
             last_update=time.time(),
         )
 
         signal = Signal(
-            token=token, oracle=oracle, side="YES",
-            entry_price=price, fair_value=fair_value,
-            edge_pct=edge_pct, confidence=confidence,
-            size_usdc=size, time_remaining=ttl,
+            token=token,
+            oracle=oracle,
+            side="YES",
+            entry_price=price,
+            fair_value=fair_value,
+            edge_pct=edge_pct,
+            confidence=confidence,
+            size_usdc=size,
+            time_remaining=ttl,
         )
 
         # ── Composite tier ────────────────────────────────────────
-        if (abs_delta >= CFG.extreme_delta_pct
-                and edge_pct >= 15.0 and confidence >= 80):
+        if abs_delta >= CFG.extreme_delta_pct and edge_pct >= 15.0 and confidence >= 80:
             tier = "EXTREME"
-        elif (abs_delta >= CFG.extreme_delta_pct
-              or (abs_delta >= CFG.strong_delta_pct and edge_pct >= 12.0
-                  and confidence >= 65)):
+        elif abs_delta >= CFG.extreme_delta_pct or (
+            abs_delta >= CFG.strong_delta_pct and edge_pct >= 12.0 and confidence >= 65
+        ):
             tier = "STRONG"
-        elif (abs_delta >= CFG.strong_delta_pct
-              or (abs_delta >= CFG.min_delta_pct and edge_pct >= 10.0)):
+        elif abs_delta >= CFG.strong_delta_pct or (
+            abs_delta >= CFG.min_delta_pct and edge_pct >= 10.0
+        ):
             tier = "MEDIUM"
         else:
             tier = "WEAK"
@@ -347,8 +393,17 @@ class HybridEngine:
         log.info(
             "SIGNAL %s %s @ $%.3f | delta=%.4f%% conf=%.0f edge=%.1f%% "
             "ttl=%.0fs size=$%.2f fair=$%.3f spread=%.1f%% tier=%s",
-            asset, oracle_says, price, delta, confidence, edge_pct,
-            ttl, size, fair_value, token.book_spread * 100, tier,
+            asset,
+            oracle_says,
+            price,
+            delta,
+            confidence,
+            edge_pct,
+            ttl,
+            size,
+            fair_value,
+            token.book_spread * 100,
+            tier,
         )
 
         return signal
@@ -359,12 +414,17 @@ class HybridEngine:
         self._traded_windows.add(f"{asset}_{window_ts}")
         self._asset_fill_ts[asset] = now
         self._traded_windows = {
-            w for w in self._traded_windows
-            if int(w.split("_")[1]) + 600 > now
+            w for w in self._traded_windows if int(w.split("_")[1]) + 600 > now
         }
 
-    def _score(self, delta: float, ttl: float, price: float,
-               asset: str, binance_agrees: bool = True) -> float:
+    def _score(
+        self,
+        delta: float,
+        ttl: float,
+        price: float,
+        asset: str,
+        binance_agrees: bool = True,
+    ) -> float:
         """Combined confidence score (0-100).
 
         Components:
@@ -380,11 +440,19 @@ class HybridEngine:
         if abs_d >= CFG.extreme_delta_pct:
             ds = 40.0
         elif abs_d >= CFG.strong_delta_pct:
-            ds = 30.0 + (abs_d - CFG.strong_delta_pct) / \
-                 (CFG.extreme_delta_pct - CFG.strong_delta_pct) * 10
+            ds = (
+                30.0
+                + (abs_d - CFG.strong_delta_pct)
+                / (CFG.extreme_delta_pct - CFG.strong_delta_pct)
+                * 10
+            )
         elif abs_d >= CFG.min_delta_pct:
-            ds = 10.0 + (abs_d - CFG.min_delta_pct) / \
-                 (CFG.strong_delta_pct - CFG.min_delta_pct) * 20
+            ds = (
+                10.0
+                + (abs_d - CFG.min_delta_pct)
+                / (CFG.strong_delta_pct - CFG.min_delta_pct)
+                * 20
+            )
         else:
             ds = 0.0
 
@@ -441,7 +509,7 @@ class HybridEngine:
         if abs_d >= 0.50:
             base = 0.80
         elif abs_d >= 0.20:
-            base = 0.65 + (abs_d - 0.20) / 0.30 * 0.05   # 0.65→0.70 across HIGH tier
+            base = 0.65 + (abs_d - 0.20) / 0.30 * 0.05  # 0.65→0.70 across HIGH tier
         elif abs_d >= 0.15:
             base = 0.76 + (abs_d - 0.15) / 0.05 * 0.04
         elif abs_d >= 0.10:
@@ -471,8 +539,9 @@ class HybridEngine:
 
         return min(0.97, base * adj)
 
-    def _compute_size(self, entry_price: float, edge_pct: float,
-                      portfolio: float, is_live: bool) -> float:
+    def _compute_size(
+        self, entry_price: float, edge_pct: float, portfolio: float, is_live: bool
+    ) -> float:
         """Dynamic position sizing."""
         base = portfolio * CFG.max_position_pct / 100
         base = min(base, CFG.max_position_usdc)
