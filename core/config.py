@@ -53,12 +53,15 @@ class Config:
     )
 
     # ── Oracle thresholds ────────────────────────────────────────────
-    # Live data: delta 0.05-0.10% (STRONG tier) WR=23% on 13 trades = -$24.98.
-    # Only EXTREME tier (>0.10%) is profitable: WR=68% on 19 trades = +$4.96.
-    # Raise min threshold to filter out the loss-generating STRONG tier entirely.
-    min_delta_pct: float = 0.100  # was 0.012 — only trade when oracle moves ≥0.10%
-    strong_delta_pct: float = 0.150  # STRONG tier: 0.10-0.15% (future differentiation)
-    extreme_delta_pct: float = 0.100  # unchanged — all signals qualifying are extreme
+    # Live data: EXTREME tier (≥0.10%) WR=68% on 19 trades = +$4.96 (profitable).
+    # STRONG tier (0.05-0.10%) WR=23% on 13 trades = -$24.98.
+    # n=13 is too small to confidently filter — upper 95% CI (~50%) is above
+    # the ~39% breakeven. Strategy: keep STRONG live at half position size to
+    # collect data without excess bleed. Re-evaluate after 50+ STRONG trades.
+    min_delta_pct: float = 0.050  # STRONG tier re-enabled; was 0.100
+    strong_delta_pct: float = 0.050  # STRONG tier: 0.05-0.10% (half size)
+    extreme_delta_pct: float = 0.100  # EXTREME tier: ≥0.10% (full size)
+    strong_tier_size_mult: float = 0.50  # STRONG trades at 50% of computed size
 
     # ── Token price range ───────────────────────────────────────────
     min_token_price: float = 0.55

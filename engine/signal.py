@@ -322,7 +322,7 @@ class HybridEngine:
                 return None
 
         # ── Position sizing ───────────────────────────────────────
-        size = self._compute_size(price, edge_pct, portfolio, is_live)
+        size = self._compute_size(price, edge_pct, portfolio, is_live, abs_delta)
         if size < 1.0:
             return None
 
@@ -540,7 +540,12 @@ class HybridEngine:
         return min(0.97, base * adj)
 
     def _compute_size(
-        self, entry_price: float, edge_pct: float, portfolio: float, is_live: bool
+        self,
+        entry_price: float,
+        edge_pct: float,
+        portfolio: float,
+        is_live: bool,
+        abs_delta: float = 0.0,
     ) -> float:
         """Dynamic position sizing."""
         base = portfolio * CFG.max_position_pct / 100
@@ -563,6 +568,11 @@ class HybridEngine:
             edge_mult = 0.7
 
         size = base * mult * edge_mult
+
+        # STRONG tier (0.05-0.10%): half position size while collecting data.
+        # n=13 trades is insufficient to statistically confirm it's unprofitable.
+        if CFG.strong_delta_pct <= abs_delta < CFG.extreme_delta_pct:
+            size *= CFG.strong_tier_size_mult
 
         if is_live:
             size = min(size, CFG.live_max_usdc)
