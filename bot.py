@@ -446,6 +446,9 @@ async def run(is_live: bool, portfolio: float):
 
                 # Risk check
                 can_trade, reason = risk.can_trade()
+                # Reset actioned flag when kill switch clears at UTC midnight
+                if _kill_switch_actioned and not risk.kill_switch:
+                    _kill_switch_actioned = False
                 if not can_trade:
                     if risk.kill_switch and reason.startswith("kill switch"):
                         if not _kill_switch_actioned:

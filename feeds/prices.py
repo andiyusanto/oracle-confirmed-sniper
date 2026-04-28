@@ -298,9 +298,10 @@ class PriceFeeds:
             except Exception as e:
                 if self._running:
                     self._rtds_reconnects += 1
+                    delay = min(3 * (2 ** min(self._rtds_reconnects - 1, 4)), 60)
                     log.warning("RTDS disconnected (%d total): %s — "
-                                "reconnecting", self._rtds_reconnects, e)
-                    await asyncio.sleep(3)
+                                "reconnecting in %.0fs", self._rtds_reconnects, e, delay)
+                    await asyncio.sleep(delay)
 
     async def run_binance(self):
         """Direct Binance WebSocket as backup/cross-check.

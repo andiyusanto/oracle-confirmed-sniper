@@ -53,15 +53,14 @@ class Config:
     )
 
     # ── Oracle thresholds ────────────────────────────────────────────
-    # Live data: EXTREME tier (≥0.10%) WR=68% on 19 trades = +$4.96 (profitable).
-    # STRONG tier (0.05-0.10%) WR=23% on 13 trades = -$24.98.
-    # n=13 is too small to confidently filter — upper 95% CI (~50%) is above
-    # the ~39% breakeven. Strategy: keep STRONG live at half position size to
-    # collect data without excess bleed. Re-evaluate after 50+ STRONG trades.
-    min_delta_pct: float = 0.050  # STRONG tier re-enabled; was 0.100
-    strong_delta_pct: float = 0.050  # STRONG tier: 0.05-0.10% (half size)
+    # Live data (n=43 EXPIRED LIVE trades, breakeven WR=62.2%):
+    #   EXTREME (≥0.10%): n=26, WR=73.1%, upper 95%CI=86.3% — PROFITABLE
+    #   STRONG (0.05-0.10%): n=16, WR=31.2%, upper 95%CI=55.6% < 62.2% — FILTERED
+    # Upper CI for STRONG is below breakeven → confirmed negative EV at n=16.
+    min_delta_pct: float = 0.100  # EXTREME only; STRONG confirmed neg EV
+    strong_delta_pct: float = 0.100  # kept in sync with min_delta_pct
     extreme_delta_pct: float = 0.100  # EXTREME tier: ≥0.10% (full size)
-    strong_tier_size_mult: float = 0.50  # STRONG trades at 50% of computed size
+    strong_tier_size_mult: float = 0.50  # unused while STRONG is filtered
 
     # ── Token price range ───────────────────────────────────────────
     min_token_price: float = 0.55
@@ -126,7 +125,9 @@ class Config:
     # Evidence: 38 UP trades in these hours → WR=44.7%, PF=0.266, net=-$64.11
     #           38 UP trades outside these hours → WR=86.8%, PF=3.130, net=+$38.59
     # NOTE: previous config had [7] derived from local time (WIB=UTC+7). UTC 0 = 07:00 WIB.
-    blackout_hours_utc: list = field(default_factory=lambda: [0, 2, 6, 7, 17])
+    # UTC 01: Asia equity open (missed from 00-02 range, n=6 WR=50%)
+    # UTC 18-19: n=4 each — insufficient data (upper CI >62% breakeven), revisit at n≥15
+    blackout_hours_utc: list = field(default_factory=lambda: [0, 1, 2, 6, 7, 17])
 
     # ── Fee structure ───────────────────────────────────────────────
     # Orders are placed at best_ask → immediate match → taker in practice.

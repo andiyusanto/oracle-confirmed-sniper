@@ -147,6 +147,13 @@ class CapitalVerifier:
             "severity": severity,
         }
 
+        # after_redeem snapshots always carry a timing gap: the CLOB balance lags
+        # on-chain settlement by seconds to minutes. The bot portfolio already
+        # includes win PnL while CLOB still shows pre-redemption USDC. A CRITICAL
+        # pause here is always a false positive — cap at WARNING for this reason.
+        if severity == "CRITICAL" and reason == "after_redeem":
+            severity = "WARNING"
+
         if severity == "WARNING":
             log.warning(
                 "CAPITAL WARN: bot portfolio $%.2f vs CLOB $%.2f "

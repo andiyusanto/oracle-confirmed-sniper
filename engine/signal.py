@@ -414,7 +414,7 @@ class HybridEngine:
         self._traded_windows.add(f"{asset}_{window_ts}")
         self._asset_fill_ts[asset] = now
         self._traded_windows = {
-            w for w in self._traded_windows if int(w.split("_")[1]) + 600 > now
+            w for w in self._traded_windows if int(w.split("_")[1]) + 1800 > now
         }
 
     def _score(

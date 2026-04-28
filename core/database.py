@@ -54,7 +54,8 @@ class Database:
                 actual_pnl REAL NOT NULL,
                 discrepancy REAL NOT NULL,
                 severity TEXT NOT NULL,
-                timestamp REAL NOT NULL
+                timestamp REAL NOT NULL,
+                UNIQUE(trade_id, outcome)
             );
             CREATE INDEX IF NOT EXISTS idx_cv_trade ON capital_verifications(trade_id);
             CREATE INDEX IF NOT EXISTS idx_cv_ts ON capital_verifications(timestamp);
@@ -82,6 +83,28 @@ class Database:
                 _log.getLogger("hybrid.db").warning(
                     "condition_id migration failed: %s", _e
                 )
+
+        # Migration: deduplicate capital_verifications and add UNIQUE(trade_id, outcome).
+        # Running verify_capital.py --fix repeatedly created 7-8 rows per trade.
+        # Keep only the latest row per (trade_id, outcome), then enforce uniqueness.
+        try:
+            self.conn.execute("""
+                DELETE FROM capital_verifications
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM capital_verifications
+                    GROUP BY trade_id, outcome
+                )
+            """)
+            self.conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_cv_unique
+                ON capital_verifications(trade_id, outcome)
+            """)
+            self.conn.commit()
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger("hybrid.db").warning(
+                "capital_verifications dedup migration failed: %s", _e
+            )
 
     def save_trade(self, t: Trade):
         with self._lock:
@@ -252,7 +275,7 @@ class Database:
     ) -> None:
         with self._lock:
             self.conn.execute(
-                "INSERT INTO capital_verifications "
+                "INSERT OR REPLACE INTO capital_verifications "
                 "(trade_id, outcome, expected_pnl, actual_pnl, discrepancy, severity, timestamp) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (

@@ -17,9 +17,28 @@ class RiskManager:
         self.kill_switch = False
         self._daily_count = 0
         self._last_day = ""
-        self._consecutive_losses = 0
+        self._consecutive_losses = self._load_consec_losses()
         self._lockout_until = 0.0
         self._check_day()
+        if self._consecutive_losses > 0:
+            log.info(
+                "RISK: loaded %d consecutive loss(es) from DB at startup",
+                self._consecutive_losses,
+            )
+
+    def _load_consec_losses(self) -> int:
+        """Count consecutive losses at the tail of recent EXPIRED LIVE trades."""
+        cur = self.db.conn.execute(
+            "SELECT pnl FROM trades WHERE mode='LIVE' AND status='EXPIRED' "
+            "ORDER BY opened_at DESC LIMIT 10"
+        )
+        streak = 0
+        for (pnl,) in cur.fetchall():
+            if pnl is not None and pnl < 0:
+                streak += 1
+            else:
+                break
+        return streak
 
     def _check_day(self):
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
