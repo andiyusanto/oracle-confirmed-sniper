@@ -1,14 +1,12 @@
 """
-Polymarket USDC.e On-Chain Approval
-====================================
-Directly submits an ERC20 approve() transaction to Polygon.
+Polymarket pUSD On-Chain Approval
+===================================
+Directly submits ERC20 approve() transactions to Polygon.
 
-The py-clob-client update_balance_allowance() API call is informational
-only and doesn't write on-chain. This script does the real approval.
+After Polymarket Exchange V2 (April 28, 2026), collateral is pUSD —
+not USDC.e. This script approves pUSD for the V2 exchange contracts.
 
-Approves both required spenders:
-  1. CTF Exchange (main CLOB contract)
-  2. NegRisk CTF Exchange (for neg-risk markets)
+Run AFTER wrap_pusd.py has converted your USDC.e to pUSD.
 
 Usage:
     python3 approve_usdc.py
@@ -27,14 +25,14 @@ POLYGON_RPCS = [
     "https://polygon-rpc.com",
 ]
 
-USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+# pUSD: Polymarket USD (V2 collateral token, backed 1:1 by native USDC)
+# Replaces USDC.e as of Polymarket Exchange V2 (April 28, 2026)
+USDC_E = Web3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
 
 SPENDERS = [
-    ("CTF Exchange (old)",         "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
-    ("NegRisk CTF Exchange (old)", "0xC5d563A36AE78145C45a50134d48A1215220f80a"),
-    ("CTF Exchange (new)",         "0xE111180000d2663C0091e4f400237545B87B996B"),
-    ("NegRisk CTF Exchange (new)", "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"),
-    ("USDC Transfer Helper (new)", "0xe2222d279d744050d28e00520010520000310F59"),
+    ("CTF Exchange (V2)",         "0xE111180000d2663C0091e4f400237545B87B996B"),
+    ("NegRisk CTF Exchange (V2)", "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"),
+    ("USDC Transfer Helper (V2)", "0xe2222d279d744050d28e00520010520000310F59"),
 ]
 
 MAX_UINT256 = 2**256 - 1

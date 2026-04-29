@@ -17,7 +17,19 @@
       "Bash(python3 -c \"import sqlite3; print\\('sqlite3 ok'\\)\")",
       "Bash(python3 -)",
       "Read(//home/tengkorakhitam/polymarket-arbitrage-bot/**)",
-      "Read(//home/tengkorakhitam/**)"
+      "Read(//home/tengkorakhitam/**)",
+      "WebSearch",
+      "WebFetch(domain:docs.polymarket.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(pip show *)",
+      "Bash(pip index *)",
+      "Bash(python3 -c \"import py_clob_client; print\\(py_clob_client.__version__ if hasattr\\(py_clob_client, '__version__'\\) else 'no version attr'\\)\")",
+      "Bash(python3 -c \"from py_clob_client.client import ClobClient; from py_clob_client.clob_types import BalanceAllowanceParams, AssetType; print\\('imports OK'\\)\")",
+      "Bash(python3 -c \"import importlib.util, sys; spec = importlib.util.find_spec\\('py_clob_client_v2'\\); print\\(spec\\)\")",
+      "Bash(python3 -c \"import py_clob_client_v2; print\\('ok'\\)\")",
+      "Read(//root/**)",
+      "Read(//opt/**)",
+      "WebFetch(domain:polygonscan.com)"
     ]
   }
 }
