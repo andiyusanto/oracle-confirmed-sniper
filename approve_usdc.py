@@ -30,8 +30,11 @@ POLYGON_RPCS = [
 USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 
 SPENDERS = [
-    ("CTF Exchange",         "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
-    ("NegRisk CTF Exchange", "0xC5d563A36AE78145C45a50134d48A1215220f80a"),
+    ("CTF Exchange (old)",         "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
+    ("NegRisk CTF Exchange (old)", "0xC5d563A36AE78145C45a50134d48A1215220f80a"),
+    ("CTF Exchange (new)",         "0xE111180000d2663C0091e4f400237545B87B996B"),
+    ("NegRisk CTF Exchange (new)", "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"),
+    ("USDC Transfer Helper (new)", "0xe2222d279d744050d28e00520010520000310F59"),
 ]
 
 MAX_UINT256 = 2**256 - 1
