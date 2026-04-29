@@ -142,7 +142,8 @@ def main() -> None:
         print("❌ No USDC.e to wrap. Your wallet has no USDC.e on Polygon.")
         sys.exit(1)
 
-    gas_price = w3.eth.gas_price
+    # Add 30% buffer to avoid "replacement transaction underpriced" errors
+    gas_price = int(w3.eth.gas_price * 1.3)
 
     # ── Step 1: Approve Collateral Onramp to spend USDC.e ─────────────────
     print("--- Step 1: Approve Collateral Onramp for USDC.e ---")
@@ -167,7 +168,8 @@ def main() -> None:
 
     # ── Step 2: Wrap USDC.e → pUSD ────────────────────────────────────────
     print(f"--- Step 2: Wrap ${usdc_e_bal:.6f} USDC.e → pUSD ---")
-    nonce = w3.eth.get_transaction_count(wallet)
+    # Use 'pending' to account for any still-pending transactions in the mempool
+    nonce = w3.eth.get_transaction_count(wallet, "pending")
     tx = onramp.functions.wrap(USDC_E, wallet, usdc_e_raw).build_transaction({
         "from":     wallet,
         "nonce":    nonce,
