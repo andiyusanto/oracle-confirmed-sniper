@@ -31,7 +31,10 @@
       "Read(//opt/**)",
       "WebFetch(domain:polygonscan.com)",
       "Bash(venv/bin/ruff check *)",
-      "Bash(python -m py_compile core/models.py feeds/markets.py execution/executor.py)"
+      "Bash(python -m py_compile core/models.py feeds/markets.py execution/executor.py)",
+      "Read(//home/yusantoandi/**)",
+      "Bash(pip3 show *)",
+      "Bash(python3 -c \"from py_clob_client.clob_types import PartialCreateOrderOptions; import inspect; print\\(inspect.signature\\(PartialCreateOrderOptions\\)\\)\")"
     ]
   }
 }
