@@ -40,7 +40,8 @@ flowchart TD
 
     subgraph Setup["setup scripts"]
         SP["setup.py\n· derive API creds\n· write .env\n· sync CLOB balance"]
-        AU["approve_usdc.py\n· on-chain approve()\n· both CLOB contracts"]
+        WP["wrap_pusd.py\n· approve Onramp for USDC.e\n· call wrap() → mint pUSD\n· one-time migration tool"]
+        AU["approve_usdc.py\n· on-chain pUSD approve()\n· 3 V2 CLOB contracts"]
         WD["withdraw.py\n· show balance\n· partial/full withdraw\n· yes/no confirm"]
         RD["core/redeem.py\n· redeem_all_async()\n· web3 CTF on-chain\n· standard + neg-risk"]
         RN["redeem_now.py\n· manual redemption\n· lists positions\n· yes/no confirm"]
@@ -49,7 +50,8 @@ flowchart TD
     CL -->|"crypto_prices_chainlink\n~10s updates"| PF
     BN -->|"bookTicker stream\nsub-second"| PF
     GM -->|"slug lookup\ntoken IDs + prices"| MD
-    POL -->|"ERC20 approve tx"| AU
+    POL -->|"ERC20 approve tx"| WP
+    POL -->|"pUSD approve tx"| AU
 
     PF -->|"best_price()\noracle_delta()\nbinance_agrees()"| HE
     MD -->|"Token objects\nbook_price"| HE
@@ -72,7 +74,8 @@ flowchart TD
     EX -->|"open positions"| DASH
 
     SP -->|"API creds → .env"| CLOB
-    AU -->|"USDC.e allowance"| POL
+    WP -->|"USDC.e → pUSD"| POL
+    AU -->|"pUSD allowance"| POL
     WD -->|"ERC20 transfer"| POL
     RD -->|"redeemPositions()"| POL
     RN -->|"calls"| RD
@@ -265,8 +268,9 @@ oracle-confirmed-sniper/
 ├── bot.py              # Main entry point and event loop
 ├── analyze.py          # Shim: python3 analyze.py <args> (calls analysis/analyze.py)
 ├── setup.py            # Generates API credentials from wallet key → writes .env
-├── approve_usdc.py     # On-chain USDC.e approve() for both CLOB spender contracts
-├── withdraw.py         # Withdraw USDC.e from wallet — partial or full, with confirmation
+├── wrap_pusd.py        # One-time migration: approve Onramp + call wrap() to convert USDC.e → pUSD
+├── approve_usdc.py     # On-chain pUSD approve() for 3 V2 CLOB spender contracts
+├── withdraw.py         # Withdraw pUSD from wallet — partial or full, with confirmation
 ├── redeem_now.py       # Manual redemption: lists winning positions, yes/no confirm
 ├── setup_gcp.sh        # One-shot GCP server setup script
 ├── requirements.txt
@@ -300,6 +304,8 @@ oracle-confirmed-sniper/
 pip install -r requirements.txt
 ```
 
+> **Polymarket Exchange V2 (April 28, 2026):** Polymarket migrated from USDC.e to **pUSD** (Polymarket USD) as the only accepted collateral. If your wallet holds USDC.e, you must convert it to pUSD before trading. Follow Steps 1a and 1b below. If your wallet already holds pUSD, skip directly to Step 2.
+
 ### Step 1 — Polymarket API Credentials
 
 Fill in `pre_setup.env` with your wallet details:
@@ -315,13 +321,42 @@ Then run:
 python3 setup.py
 ```
 
-This connects to Polymarket's CLOB using your private key, derives API key/secret/passphrase, and writes everything to `.env` automatically. Also attempts to set the USDC.e allowance via API.
+This connects to Polymarket's CLOB using your private key, derives API key/secret/passphrase, and writes everything to `.env` automatically.
 
 > Re-running `setup.py` is safe — it derives the same credentials from the same key.
 
-### Step 2 — On-Chain USDC.e Approval
+### Step 1a — Convert USDC.e to pUSD (V2 migration, one-time)
 
-The API-based allowance sometimes doesn't register on-chain. Run this to submit the real `approve()` transaction directly to Polygon for both CLOB spender contracts:
+**Only needed if your wallet holds USDC.e.** Since April 28, 2026, pUSD is the only accepted collateral on Polymarket Exchange V2.
+
+```bash
+python3 wrap_pusd.py
+```
+
+This script:
+1. Approves the Collateral Onramp contract to spend your USDC.e
+2. Calls `wrap()` to convert your full USDC.e balance to pUSD (1:1, on Polygon)
+
+Expected output:
+```
+  RPC: https://rpc.ankr.com/polygon
+  Wallet: 0xYourWallet...
+
+  USDC.e balance: $59.929910
+  pUSD   balance: $0.000000
+
+--- Step 1: Approve Collateral Onramp for USDC.e ---
+  ✅ Confirmed! Block: 86170671
+
+--- Step 2: Wrap $59.929910 USDC.e → pUSD ---
+  ✅ Confirmed! Block: 86170739
+```
+
+> Note: some public RPCs return stale state immediately after confirmation. If the final balance shows $0, check your wallet — the tokens are there. A confirmed `status=1` receipt means the wrap succeeded.
+
+### Step 1b — On-Chain pUSD Approval
+
+Approve pUSD for all three V2 CLOB spender contracts:
 
 ```bash
 python3 approve_usdc.py
@@ -329,13 +364,22 @@ python3 approve_usdc.py
 
 Expected output:
 ```
-✅ CTF Exchange:          approved (max)
-✅ NegRisk CTF Exchange:  approved (max)
+✅ CTF Exchange (V2):          approved (max)
+✅ NegRisk CTF Exchange (V2):  approved (max)
+✅ USDC Transfer Helper (V2):  approved (max)
 ```
 
 This only needs to be done once per wallet — the approval is permanent on-chain.
 
 > If you get `Could not connect to Polygon RPC`, the script automatically tries 5 different public RPC endpoints. Check your network if all fail.
+
+### Step 2 — On-Chain pUSD Approval (new wallets)
+
+If you are setting up a fresh wallet that already holds pUSD (no USDC.e to convert), run `approve_usdc.py` directly:
+
+```bash
+python3 approve_usdc.py
+```
 
 ### Step 3 — Telegram Alerts (optional)
 
@@ -352,7 +396,7 @@ To get credentials: message `@BotFather` → `/newbot` for the token; message `@
 
 ### Step 4 — Redeem Winning Positions
 
-When a prediction market resolves in your favor, you hold conditional tokens worth $1.00 each. These must be redeemed back to USDC.e before you can trade or withdraw.
+When a prediction market resolves in your favor, you hold conditional tokens worth $1.00 each. These must be redeemed back to pUSD before you can trade or withdraw.
 
 **Automatic redemption** — the bot redeems and syncs automatically after a WIN in live mode. No action needed.
 
@@ -362,7 +406,7 @@ When a prediction market resolves in your favor, you hold conditional tokens wor
 python3 redeem_now.py
 ```
 
-The script will list every redeemable position with size and market type, ask for confirmation, then submit on-chain transactions. After redeeming, run `setup.py` to resync the CLOB ledger so the returned USDC.e becomes available for trading:
+The script will list every redeemable position with size and market type, ask for confirmation, then submit on-chain transactions. After redeeming, run `setup.py` to resync the CLOB ledger so the returned pUSD becomes available for trading:
 
 ```bash
 python3 setup.py   # syncs CLOB balance after redemption
@@ -372,14 +416,14 @@ python3 setup.py   # syncs CLOB balance after redemption
 
 ### Step 5 — Withdraw P&L (when ready)
 
-P&L accumulates in your funder wallet on Polygon as USDC.e. Use `withdraw.py` to send any amount to any Polygon address:
+P&L accumulates in your funder wallet on Polygon as pUSD. Use `withdraw.py` to send any amount to any Polygon address:
 
 ```bash
 python3 withdraw.py
 ```
 
 The script will:
-1. Show your current USDC.e balance and MATIC gas balance
+1. Show your current pUSD balance and MATIC gas balance
 2. Ask for a destination address
 3. Ask for amount — type a number or `all`
 4. Show a full summary (from, to, amount, remaining)
@@ -390,7 +434,7 @@ The script will:
   Polymarket Wallet
 ────────────────────────────────────────────────
   Address : 0xF04EF5B9...
-  USDC.e  : $89.43
+  pUSD    : $89.43
   MATIC   : 0.2341  (gas)
 ────────────────────────────────────────────────
 
@@ -402,15 +446,15 @@ The script will:
 ────────────────────────────────────────────────
   From      : 0xF04EF5B9...
   To        : 0xYourWallet...
-  Amount    : $20.00 USDC.e
-  Remaining : $69.43 USDC.e
+  Amount    : $20.00 pUSD
+  Remaining : $69.43 pUSD
 ────────────────────────────────────────────────
 
   Confirm withdrawal? [yes/no]: yes
   ✅  Withdrawal confirmed! Block: 71234567
 ```
 
-> You need a small amount of MATIC for gas (~0.01 MATIC, worth cents). The script warns you if your MATIC balance is too low. Run this from the GCP server — Polymarket is geoblocked in Indonesia.
+> You need a small amount of MATIC for gas (~0.01 MATIC, worth cents). The script warns you if your MATIC balance is too low. Run this from the GCP server — Polymarket is geoblocked in Indonesia. Since V2, withdrawals move pUSD; if the recipient needs USDC.e they must unwrap on their end.
 
 ## Usage
 
@@ -476,9 +520,13 @@ bash setup_gcp.sh
 ```bash
 nano pre_setup.env          # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
 python3 setup.py            # generates .env automatically
-python3 approve_usdc.py     # approve USDC.e on-chain (required for live trading)
 
-# Redeem any winning positions back to USDC.e:
+# If wallet holds USDC.e (pre-V2): convert to pUSD first
+python3 wrap_pusd.py        # approve Onramp + wrap() USDC.e → pUSD (one-time, V2 migration)
+
+python3 approve_usdc.py     # approve pUSD on-chain for V2 CLOB contracts (required for live trading)
+
+# Redeem any winning positions back to pUSD:
 python3 redeem_now.py       # interactive redemption with position list + confirmation
 python3 setup.py            # re-sync CLOB balance after redemption
 
@@ -620,9 +668,13 @@ Trades are stored in `hybrid_trades.db` (SQLite). Logs are written to `hybrid.lo
 
 BTC, ETH and SOL on both 5-minute and 15-minute Polymarket prediction markets. Configurable in `core/config.py` via `assets` and `durations` — adding or removing any asset automatically updates all WebSocket subscriptions, market discovery slugs and price routing.
 
-## Live Performance (115 Trades, Apr 18–23 2026)
+## Live Performance (115 + 43 Trades, Apr 18–29 2026)
 
-All figures from in-sample filtering of 115 live EXPIRED trades. Expect 20–30% out-of-sample degradation.
+> **Exchange V2 note (Apr 28, 2026):** Polymarket's full exchange upgrade broke the bot on April 29 — the CLOB backend began reporting $0 balance because it switched to checking pUSD instead of USDC.e. The bot was restored the same day via `wrap_pusd.py` + `approve_usdc.py` + `py-clob-client-v2`. Portfolio currently at $59.93.
+
+**Current live stats (43 trades, Apr 24–29):** WR 58.1% (25/43), Total P&L −$8.56, Expectancy −$0.20/trade. Breakeven WR at avg entry $0.61 is 62.2% — currently running 4.1pp below breakeven. Monitor closely: the -$3 loss pattern may indicate ghost-zone entries (TTL ≤ 15s) slipping through the `snipe_exit_sec=16` guard.
+
+All figures from in-sample filtering of 115 live EXPIRED trades (Apr 18–23). Expect 20–30% out-of-sample degradation.
 
 ### Filter Chain Results
 
