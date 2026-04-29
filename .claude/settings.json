@@ -29,7 +29,9 @@
       "Bash(python3 -c \"import py_clob_client_v2; print\\('ok'\\)\")",
       "Read(//root/**)",
       "Read(//opt/**)",
-      "WebFetch(domain:polygonscan.com)"
+      "WebFetch(domain:polygonscan.com)",
+      "Bash(venv/bin/ruff check *)",
+      "Bash(python -m py_compile core/models.py feeds/markets.py execution/executor.py)"
     ]
   }
 }

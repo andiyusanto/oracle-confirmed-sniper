@@ -261,6 +261,13 @@ class MarketDiscovery:
                     prices = json.loads(prices)
 
                 cid = m.get("conditionId") or m.get("condition_id") or ""
+                # BTC/ETH/SOL updown markets are always on NegRisk CTF Exchange.
+                # Prefer the API field; fall back to True for known NegRisk assets.
+                _nr_flag = m.get("enableNegRisk") or m.get("negRisk") or m.get("neg_risk")
+                if _nr_flag is None:
+                    neg_risk = asset in ("BTC", "ETH", "SOL")
+                else:
+                    neg_risk = bool(_nr_flag)
 
                 for i, tid in enumerate(tids):
                     tid = str(tid)
@@ -275,6 +282,7 @@ class MarketDiscovery:
                         duration=dur_str, end_ts=end_ts, window_ts=wts,
                         book_price=price, book_updated=0,
                         conditionId=cid,
+                        neg_risk=neg_risk,
                     )
 
                     # Trigger opening price capture for any token in this window.

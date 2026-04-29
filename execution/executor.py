@@ -204,6 +204,8 @@ class Executor:
             condition_id=signal.token.conditionId,
         )
 
+        trade._neg_risk = signal.token.neg_risk
+
         if self.is_live:
             success = self._execute_live(signal, trade)
             if not success:
@@ -353,7 +355,7 @@ class Executor:
 
             options = PartialCreateOrderOptions(
                 tick_size=tick_size,
-                neg_risk=False,
+                neg_risk=signal.token.neg_risk,
             )
 
             resp = self._clob.create_and_post_order(order_args, options)
@@ -511,9 +513,10 @@ class Executor:
                 side="SELL",
                 fee_rate_bps=1000,
             )
+            neg_risk = getattr(trade, "_neg_risk", False)
             options = PartialCreateOrderOptions(
                 tick_size=tick_size,
-                neg_risk=False,
+                neg_risk=neg_risk,
             )
 
             resp = self._clob.create_and_post_order(order_args, options)

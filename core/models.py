@@ -18,6 +18,7 @@ class Token:
         0.0  # bid-ask spread as fraction of mid price (e.g. 0.15 = 15%)
     )
     conditionId: str = ""  # CTF conditionId — empty if Gamma API didn't return it
+    neg_risk: bool = False  # True for NegRisk CTF markets (BTC/ETH/SOL updown)
 
 
 @dataclass
