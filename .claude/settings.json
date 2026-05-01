@@ -34,7 +34,15 @@
       "Bash(python -m py_compile core/models.py feeds/markets.py execution/executor.py)",
       "Read(//home/yusantoandi/**)",
       "Bash(pip3 show *)",
-      "Bash(python3 -c \"from py_clob_client.clob_types import PartialCreateOrderOptions; import inspect; print\\(inspect.signature\\(PartialCreateOrderOptions\\)\\)\")"
+      "Bash(python3 -c \"from py_clob_client.clob_types import PartialCreateOrderOptions; import inspect; print\\(inspect.signature\\(PartialCreateOrderOptions\\)\\)\")",
+      "Bash(python3 -c \"import py_clob_client; print\\(py_clob_client.__file__\\)\")",
+      "Read(//usr/**)",
+      "Bash(python3 -c \"import py_clob_client; import os; print\\(os.path.dirname\\(py_clob_client.__file__\\)\\)\")",
+      "Bash(pip list *)",
+      "Bash(pip3 list *)",
+      "Bash(python3 -c \"import sys; print\\('\\\\n'.join\\(sys.path\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"from py_clob_client.client import ClobClient; print\\('OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"from py_clob_client_v2.client import ClobClient; print\\('OK v2'\\)\")"
     ]
   }
 }

@@ -44,13 +44,13 @@ _POLYGON_RPCS = [
 log = logging.getLogger("hybrid.markets")
 
 try:
-    from py_clob_client.client import ClobClient
+    from py_clob_client_v2.client import ClobClient
     HAS_CLOB = True
 except ImportError:
     HAS_CLOB = False
 
 try:
-    from py_clob_client.constants import POLYGON
+    from py_clob_client_v2.constants import POLYGON
 except ImportError:
     POLYGON = 137
 

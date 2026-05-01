@@ -26,8 +26,8 @@ log = logging.getLogger("hybrid.executor")
 
 # ── Live execution imports ────────────────────────────────────────────
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import (
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import (
         ApiCreds,
         OrderArgs,
         PartialCreateOrderOptions,
@@ -68,7 +68,7 @@ class Executor:
             log.error("LIVE mode requires POLY_PRIVATE_KEY in .env")
             return
         try:
-            from py_clob_client.constants import POLYGON
+            from py_clob_client_v2.constants import POLYGON
 
             creds = ApiCreds(
                 api_key=CFG.api_key,
@@ -342,15 +342,12 @@ class Executor:
                 )
                 shares = CFG.min_shares
 
-            # fee_rate_bps must match the market's required fee rate exactly.
-            # Polymarket rejects orders where the provided rate doesn't match.
-            # This market requires 1000 bps (10%).
+            # V2 orders: fee is managed by the exchange backend, not embedded in the order.
             order_args = OrderArgs(
                 token_id=signal.token.token_id,
                 price=price_d,
                 size=shares,
                 side="BUY",
-                fee_rate_bps=1000,
             )
 
             options = PartialCreateOrderOptions(
@@ -511,7 +508,6 @@ class Executor:
                 price=price_d,
                 size=shares,
                 side="SELL",
-                fee_rate_bps=1000,
             )
             neg_risk = getattr(trade, "_neg_risk", False)
             options = PartialCreateOrderOptions(
