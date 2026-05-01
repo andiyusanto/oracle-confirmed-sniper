@@ -250,8 +250,10 @@ class Executor:
         try:
             # Step 1: Read order book to get real prices
             book = self._clob.get_order_book(signal.token.token_id)
+            _raw_asks = book.get("asks") if isinstance(book, dict) else (book.asks or [])
             asks = sorted(
-                [float(a.price) for a in (book.asks or []) if float(a.price) > 0]
+                [float(a["price"] if isinstance(a, dict) else a.price) for a in (_raw_asks or [])
+                 if float(a["price"] if isinstance(a, dict) else a.price) > 0]
             )
 
             if not asks:
@@ -468,8 +470,10 @@ class Executor:
 
         try:
             book = self._clob.get_order_book(token_id)
+            _raw_bids = book.get("bids") if isinstance(book, dict) else (book.bids or [])
             bids = sorted(
-                [float(b.price) for b in (book.bids or []) if float(b.price) > 0],
+                [float(b["price"] if isinstance(b, dict) else b.price) for b in (_raw_bids or [])
+                 if float(b["price"] if isinstance(b, dict) else b.price) > 0],
                 reverse=True,
             )
 

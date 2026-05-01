@@ -320,10 +320,14 @@ class MarketDiscovery:
 
             def _fetch():
                 book = self._clob.get_order_book(token.token_id)
-                asks = [float(a.price) for a in (book.asks or [])
-                        if float(a.price) > 0]
-                bids = [float(b.price) for b in (book.bids or [])
-                        if float(b.price) > 0]
+                _raw_asks = book.get("asks") if isinstance(book, dict) else (book.asks or [])
+                _raw_bids = book.get("bids") if isinstance(book, dict) else (book.bids or [])
+                asks = [float(a["price"] if isinstance(a, dict) else a.price)
+                        for a in (_raw_asks or [])
+                        if float(a["price"] if isinstance(a, dict) else a.price) > 0]
+                bids = [float(b["price"] if isinstance(b, dict) else b.price)
+                        for b in (_raw_bids or [])
+                        if float(b["price"] if isinstance(b, dict) else b.price) > 0]
                 # No asks = market fully priced in, nothing to buy.
                 # Return 0.99 so the signal engine's max_token_price
                 # check filters it out before execution.

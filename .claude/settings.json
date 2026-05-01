@@ -42,7 +42,12 @@
       "Bash(pip3 list *)",
       "Bash(python3 -c \"import sys; print\\('\\\\n'.join\\(sys.path\\)\\)\")",
       "Bash(.venv/bin/python3 -c \"from py_clob_client.client import ClobClient; print\\('OK'\\)\")",
-      "Bash(.venv/bin/python3 -c \"from py_clob_client_v2.client import ClobClient; print\\('OK v2'\\)\")"
+      "Bash(.venv/bin/python3 -c \"from py_clob_client_v2.client import ClobClient; print\\('OK v2'\\)\")",
+      "Bash(sqlite3 hybrid_trades.db \".tables\")",
+      "Bash(sqlite3 hybrid_trades.db \".schema\")",
+      "Bash(.venv/bin/python3 -c ' *)",
+      "Bash(.venv/bin/python3 -c \"from execution.executor import Executor; print\\('executor OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"from feeds.markets import MarketDiscovery; print\\('markets OK'\\)\")"
     ]
   }
 }
