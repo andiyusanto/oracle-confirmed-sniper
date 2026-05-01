@@ -267,15 +267,15 @@ High-price tokens had the original scoring backwards — a $0.90 token was award
 oracle-confirmed-sniper/
 ├── bot.py              # Main entry point and event loop
 ├── analyze.py          # Shim: python3 analyze.py <args> (calls analysis/analyze.py)
-├── setup.py            # Generates API credentials from wallet key → writes .env
+├── get_creds.py        # Registers API credentials via curl_cffi (bypasses Cloudflare) → writes .env
+├── setup.py            # Alternative credential generator (may be blocked on cloud IPs)
 ├── wrap_pusd.py        # One-time migration: approve Onramp + call wrap() to convert USDC.e → pUSD
 ├── approve_usdc.py     # On-chain pUSD approve() for 3 V2 CLOB spender contracts
 ├── withdraw.py         # Withdraw pUSD from wallet — partial or full, with confirmation
 ├── redeem_now.py       # Manual redemption: lists winning positions, yes/no confirm
 ├── setup_gcp.sh        # One-shot GCP server setup script
 ├── requirements.txt
-├── .env.example
-├── pre_setup.env       # Fill with private key + funder address before running setup.py
+├── .env.example        # Template — copy to .env and fill in private key + funder address
 ├── core/
 │   ├── config.py       # All tunable parameters (CFG)
 │   ├── models.py       # Data classes: Token, OracleState, Signal, Trade
@@ -308,22 +308,33 @@ pip install -r requirements.txt
 
 ### Step 1 — Polymarket API Credentials
 
-Fill in `pre_setup.env` with your wallet details:
-
-```env
-POLY_PRIVATE_KEY=0x...
-POLY_FUNDER_ADDRESS=0x...
-```
-
-Then run:
+Copy the example env file and fill in your wallet details:
 
 ```bash
-python3 setup.py
+cp .env.example .env
+nano .env
 ```
 
-This connects to Polymarket's CLOB using your private key, derives API key/secret/passphrase, and writes everything to `.env` automatically.
+Set these two fields:
 
-> Re-running `setup.py` is safe — it derives the same credentials from the same key.
+```env
+POLY_PRIVATE_KEY=0x...          # your wallet private key
+POLY_FUNDER_ADDRESS=0x...       # the public address of that wallet
+```
+
+Then generate API credentials using `get_creds.py`:
+
+```bash
+pip install curl_cffi            # one-time, needed to bypass Cloudflare
+python3 get_creds.py
+```
+
+This script uses `curl_cffi` (Chrome TLS impersonation) to call Polymarket's CLOB API and register your API key/secret/passphrase, then writes them to `.env` automatically.
+
+> **Why `get_creds.py` instead of `setup.py`?**  
+> `setup.py` uses `httpx` which Cloudflare recognises as a bot and blocks with a 403 on cloud/VPS IPs. `get_creds.py` uses `curl_cffi` with `impersonate="chrome"` to pass the Cloudflare check. If `setup.py` hits a 403, the credentials it writes are locally derived but not server-registered — orders will fail with `invalid signature`.
+
+> **`POLY_SIG_TYPE`:** `get_creds.py` writes `POLY_SIG_TYPE=0` (EOA). This is correct for standard single-wallet setups where `POLY_FUNDER_ADDRESS` is the address derived from `POLY_PRIVATE_KEY`. Do not change this unless you use a proxy/multisig wallet.
 
 ### Step 1a — Convert USDC.e to pUSD (V2 migration, one-time)
 
@@ -518,17 +529,22 @@ bash setup_gcp.sh
 ### 3. Configure credentials
 
 ```bash
-nano pre_setup.env          # fill in POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
-python3 setup.py            # generates .env automatically
+# Fill in private key and funder address
+cp .env.example .env
+nano .env                   # set POLY_PRIVATE_KEY and POLY_FUNDER_ADDRESS
 
-# If wallet holds USDC.e (pre-V2): convert to pUSD first
+# Generate API credentials (curl_cffi bypasses Cloudflare on cloud IPs)
+pip install curl_cffi
+python3 get_creds.py        # registers API key/secret/passphrase → writes to .env
+
+# If wallet holds USDC.e (pre-V2 balance): convert to pUSD first
 python3 wrap_pusd.py        # approve Onramp + wrap() USDC.e → pUSD (one-time, V2 migration)
 
-python3 approve_usdc.py     # approve pUSD on-chain for V2 CLOB contracts (required for live trading)
+# Approve pUSD for V2 CLOB contracts (required for live trading)
+python3 approve_usdc.py     # sets max allowance for all 3 V2 exchange contracts
 
 # Redeem any winning positions back to pUSD:
 python3 redeem_now.py       # interactive redemption with position list + confirmation
-python3 setup.py            # re-sync CLOB balance after redemption
 
 # When you want to withdraw profits:
 python3 withdraw.py         # interactive withdrawal with balance display + confirmation
