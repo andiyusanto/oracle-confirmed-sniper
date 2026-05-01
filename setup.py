@@ -37,14 +37,22 @@ def run_setup():
     pre = dotenv_values(ENV_FILE)
     pk = pre.get("POLY_PRIVATE_KEY", "").strip()
     funder = pre.get("POLY_FUNDER_ADDRESS", "").strip()
+    sig_type = int(pre.get("POLY_SIG_TYPE", "0").strip())
 
     if not pk:
         print("❌ POLY_PRIVATE_KEY is missing in .env")
         sys.exit(1)
 
+    # sig_type=1 required when funder != private key's derived address
+    if funder and sig_type == 0:
+        print("⚠️  POLY_FUNDER_ADDRESS is set but POLY_SIG_TYPE=0.")
+        print("   For proxy accounts, POLY_SIG_TYPE should be 1.")
+        print("   Update .env: POLY_SIG_TYPE=1  then re-run setup.py")
+
     print("--- 🔑 Generating API Credentials ---")
     print(f"  Private key: {pk[:6]}...{pk[-4:]}")
-    print(f"  Funder: {funder or '(not set)'}")
+    print(f"  Funder:      {funder or '(not set)'}")
+    print(f"  Sig type:    {sig_type}")
 
     # ── Initialize CLOB client ────────────────────────────────────
     client = ClobClient(
@@ -52,6 +60,7 @@ def run_setup():
         key=pk,
         chain_id=POLYGON,
         funder=funder or None,
+        signature_type=sig_type,
     )
 
     # ── Derive API credentials ────────────────────────────────────
@@ -66,7 +75,7 @@ def run_setup():
     set_key(ENV_FILE, "POLY_API_KEY", creds.api_key)
     set_key(ENV_FILE, "POLY_API_SECRET", creds.api_secret)
     set_key(ENV_FILE, "POLY_API_PASSPHRASE", creds.api_passphrase)
-    set_key(ENV_FILE, "POLY_SIG_TYPE", "0")
+    set_key(ENV_FILE, "POLY_SIG_TYPE", str(sig_type))
 
     # ── Re-initialize client with full Level 2 credentials ───────
     from py_clob_client_v2.clob_types import ApiCreds
@@ -76,6 +85,7 @@ def run_setup():
         key=pk,
         chain_id=POLYGON,
         funder=funder or None,
+        signature_type=sig_type,
         creds=ApiCreds(
             api_key=creds.api_key,
             api_secret=creds.api_secret,
