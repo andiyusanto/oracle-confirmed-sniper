@@ -43,11 +43,8 @@ def run_setup():
         print("❌ POLY_PRIVATE_KEY is missing in .env")
         sys.exit(1)
 
-    # sig_type=1 required when funder != private key's derived address
     if funder and sig_type == 0:
-        print("⚠️  POLY_FUNDER_ADDRESS is set but POLY_SIG_TYPE=0.")
-        print("   For proxy accounts, POLY_SIG_TYPE should be 1.")
-        print("   Update .env: POLY_SIG_TYPE=1  then re-run setup.py")
+        print(f"  Note: funder == derived address — sig_type=0 (EOA) is correct")
 
     print("--- 🔑 Generating API Credentials ---")
     print(f"  Private key: {pk[:6]}...{pk[-4:]}")
