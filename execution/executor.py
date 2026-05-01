@@ -422,6 +422,16 @@ class Executor:
                 )
                 return False
 
+            # Credential / signature errors — API key not registered or wrong sig_type.
+            # Fix: re-run get_creds.py then restart the bot.
+            if "invalid signature" in err_str or "order_version_mismatch" in err_str:
+                log.error(
+                    "LIVE ORDER AUTH FAILURE (%s): API credentials rejected. "
+                    "Re-run get_creds.py then restart the bot.",
+                    e,
+                )
+                return False
+
             # Transient server-side errors — not fatal, outer loop retries
             # with fresh book data on the next poll cycle (~0.8s).
             # Do NOT retry inside this method: the order may have been
