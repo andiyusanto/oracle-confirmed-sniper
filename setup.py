@@ -64,7 +64,7 @@ def run_setup():
     )
 
     # ── Derive API credentials ────────────────────────────────────
-    creds = client.create_or_derive_api_creds()
+    creds = client.create_or_derive_api_key()
     print(f"  API Key:        {creds.api_key}")
     print(f"  API Secret:     {creds.api_secret[:8]}...")
     print(f"  API Passphrase: {creds.api_passphrase[:8]}...")
