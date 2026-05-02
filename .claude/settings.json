@@ -47,7 +47,31 @@
       "Bash(sqlite3 hybrid_trades.db \".schema\")",
       "Bash(.venv/bin/python3 -c ' *)",
       "Bash(.venv/bin/python3 -c \"from execution.executor import Executor; print\\('executor OK'\\)\")",
-      "Bash(.venv/bin/python3 -c \"from feeds.markets import MarketDiscovery; print\\('markets OK'\\)\")"
+      "Bash(.venv/bin/python3 -c \"from feeds.markets import MarketDiscovery; print\\('markets OK'\\)\")",
+      "WebFetch(domain:gamma-api.polymarket.com)",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&tag=hype\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&question=HYPE\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=300\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(m['question'], '|', m.get\\('slug', 'N/A'\\)\\) for m in data if 'HYPE' in m.get\\('question', ''\\) or 'HYPE' in m.get\\('slug', ''\\) or 'HLP' in m.get\\('slug', ''\\)]\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(m['question']\\) for m in data if 'up' in m.get\\('question', ''\\).lower\\(\\) and \\('5' in m.get\\('question', ''\\) or '5-min' in m.get\\('question', ''\\).lower\\(\\)\\)]\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); uniq_words = set\\(\\); [uniq_words.update\\(m.get\\('question', ''\\).split\\(\\)\\) for m in data]; print\\('\\\\n'.join\\(sorted\\([w for w in uniq_words if w.isupper\\(\\) and len\\(w\\) <= 5]\\)\\)\\)\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=500\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); crypto = [m for m in data if any\\(x in m.get\\('question', ''\\).lower\\(\\) for x in ['bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol', 'crypto', 'price', '5-min', '5 min', 'updown']\\)]; print\\(f'Found {len\\(crypto\\)} crypto-related markets'\\); [print\\(m.get\\('question', ''\\), '---', m.get\\('slug', ''\\)\\) for m in crypto[:10]]\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); print\\(f'Total markets: {len\\(data\\)}'\\); tags = set\\(\\); [tags.update\\(m.get\\('tags', []\\)\\) for m in data if 'tags' in m]; print\\(f'Unique tags: {sorted\\(tags\\)[:20]}'\\)\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?limit=1000\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); crypto = [m for m in data if 'price' in m.get\\('question', ''\\).lower\\(\\) and any\\(x in m.get\\('question', ''\\).lower\\(\\) for x in ['up', 'down', 'minute']\\)]; print\\(f'Price direction markets: {len\\(crypto\\)}'\\); [print\\(m.get\\('question', ''\\)\\) for m in crypto[:15]]\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); print\\(f'Total: {len\\(data\\)}'\\); [print\\(f\\\\\"{m.get\\('slug', 'N/A'\\)}\\\\\"\\) for m in data if 'updown' in m.get\\('slug', ''\\)]\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?limit=2000\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/events?limit=500\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1713542400\")",
+      "Bash(curl -s 'https://gamma-api.polymarket.com/events?slug=__TRACKED_VAR__')",
+      "Bash(venv/bin/ruff format *)",
+      "Bash(python3 -m ruff check /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/core/config.py /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/feeds/prices.py)"
     ]
   }
 }

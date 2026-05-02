@@ -146,7 +146,7 @@ class Config:
     min_edge_pct: float = 6.0
 
     # ── Market selection ────────────────────────────────────────────
-    assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
+    assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL", "HYPE"])
     durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
 
     # ── Signal quality gates (ghost-redemption prevention) ──────────────

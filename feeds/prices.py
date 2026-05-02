@@ -25,10 +25,12 @@ class PriceFeeds:
     def __init__(self):
         self.chainlink: dict[str, float] = {}
         self.binance: dict[str, float] = {}
-        self.cl_ts: dict[str, float] = {}      # last Chainlink update time
-        self.bn_ts: dict[str, float] = {}       # last Binance update time
+        self.cl_ts: dict[str, float] = {}  # last Chainlink update time
+        self.bn_ts: dict[str, float] = {}  # last Binance update time
         self.openings: dict[str, dict[int, float]] = {}  # {asset: {window_ts: price}}
-        self._skipped_windows: set[tuple[str, int]] = set()  # (asset, window_ts) permanently skipped
+        self._skipped_windows: set[tuple[str, int]] = (
+            set()
+        )  # (asset, window_ts) permanently skipped
         self._running = False
         self._rtds_reconnects = 0
         self._binance_reconnects = 0
@@ -38,7 +40,7 @@ class PriceFeeds:
         self._price_history: dict[str, list[tuple[float, float]]] = {}
 
         # Priority 5: silent-freeze watchdog timestamps
-        self._rtds_last_msg_ts:    float = 0.0
+        self._rtds_last_msg_ts: float = 0.0
         self._binance_last_msg_ts: float = 0.0
         _WS_SILENCE_TIMEOUT = 60  # seconds — RTDS goes quiet during low volatility
 
@@ -77,8 +79,9 @@ class PriceFeeds:
         if price > 0:
             self.openings[asset][window_ts] = price
             source = "history" if self._has_history_near(asset, window_ts) else "live"
-            log.info("OPEN %s $%.2f (window %d, src=%s)",
-                     asset, price, window_ts, source)
+            log.info(
+                "OPEN %s $%.2f (window %d, src=%s)", asset, price, window_ts, source
+            )
         else:
             # Last resort: use current price only if we just joined the window.
             # If we're >60s in, the true opening is unknowable — setting current
@@ -86,23 +89,31 @@ class PriceFeeds:
             elapsed_in_window = time.time() - window_ts
             if elapsed_in_window > 60:
                 self._skipped_windows.add((asset, window_ts))
-                log.warning("OPEN %s skipped (window %d, %.0fs elapsed — "
-                            "opening unknowable after reconnect)",
-                            asset, window_ts, elapsed_in_window)
+                log.warning(
+                    "OPEN %s skipped (window %d, %.0fs elapsed — "
+                    "opening unknowable after reconnect)",
+                    asset,
+                    window_ts,
+                    elapsed_in_window,
+                )
                 return
             current = self.best_price(asset)
             if current > 0:
                 self.openings[asset][window_ts] = current
-                log.warning("OPEN %s $%.2f (window %d, src=fallback — "
-                            "no history near boundary)", asset, current, window_ts)
+                log.warning(
+                    "OPEN %s $%.2f (window %d, src=fallback — "
+                    "no history near boundary)",
+                    asset,
+                    current,
+                    window_ts,
+                )
 
         # Prune old openings
         if len(self.openings[asset]) > 30:
             for k in sorted(self.openings[asset])[:-30]:
                 del self.openings[asset][k]
 
-    def set_opening_from_gamma(self, asset: str, window_ts: int,
-                                gamma_price: float):
+    def set_opening_from_gamma(self, asset: str, window_ts: int, gamma_price: float):
         """Set opening price from Gamma API data (most reliable source).
 
         Called by MarketDiscovery when it first discovers a market and
@@ -112,8 +123,9 @@ class PriceFeeds:
             return  # don't overwrite — first source wins
         if gamma_price > 0:
             self.openings[asset][window_ts] = gamma_price
-            log.info("OPEN %s $%.2f (window %d, src=gamma)",
-                     asset, gamma_price, window_ts)
+            log.info(
+                "OPEN %s $%.2f (window %d, src=gamma)", asset, gamma_price, window_ts
+            )
 
     def _interpolate_price_at(self, asset: str, target_ts: float) -> float:
         """Find the price closest to a target timestamp from history."""
@@ -123,7 +135,7 @@ class PriceFeeds:
 
         # Find closest entry within 30 seconds of target
         best_price = 0.0
-        best_gap = float('inf')
+        best_gap = float("inf")
         for ts, price in history:
             gap = abs(ts - target_ts)
             if gap < best_gap:
@@ -151,9 +163,7 @@ class PriceFeeds:
 
         # Keep only last 10 minutes
         cutoff = now - 600
-        self._price_history[asset] = [
-            (t, p) for t, p in history if t > cutoff
-        ]
+        self._price_history[asset] = [(t, p) for t, p in history if t > cutoff]
 
     def oracle_delta(self, asset: str, window_ts: int) -> float:
         """Signed % delta: current oracle price vs opening price."""
@@ -165,8 +175,9 @@ class PriceFeeds:
             return 0.0
         return (current - opening) / opening * 100
 
-    def all_assets_trending_down(self, assets: list[str],
-                                  min_delta_pct: float = 0.0) -> bool:
+    def all_assets_trending_down(
+        self, assets: list[str], min_delta_pct: float = 0.0
+    ) -> bool:
         """True if every asset currently has a negative oracle delta.
 
         Uses each asset's most recent registered opening window.
@@ -182,8 +193,7 @@ class PriceFeeds:
                 return False
         return True
 
-    def oracle_delta_at(self, asset: str, window_ts: int,
-                        lookback_sec: float) -> float:
+    def oracle_delta_at(self, asset: str, window_ts: int, lookback_sec: float) -> float:
         """Signed % delta at a past point vs the same window's opening price.
 
         Used for momentum filtering: compare current delta to delta N seconds
@@ -201,8 +211,7 @@ class PriceFeeds:
             return 0.0
         return (past_price - opening) / opening * 100
 
-    def binance_agrees(self, asset: str, oracle_says: str,
-                       window_ts: int = 0) -> bool:
+    def binance_agrees(self, asset: str, oracle_says: str, window_ts: int = 0) -> bool:
         """Check if Binance price direction agrees with Chainlink oracle.
 
         Compares Binance current price against the *specific window's*
@@ -268,20 +277,34 @@ class PriceFeeds:
                     # Combining into one message or using asset filters silently kills delivery.
                     # CL symbols: "btc/usd", "eth/usd", "sol/usd" — parser handles filtering.
                     # BN symbols: "btcusdt", "ethusdt", "solusdt" — parser handles filtering.
-                    await ws.send(json.dumps({
-                        "action": "subscribe",
-                        "subscriptions": [
-                            {"topic": "crypto_prices_chainlink",
-                             "type": "update", "filters": ""}
-                        ]
-                    }))
-                    await ws.send(json.dumps({
-                        "action": "subscribe",
-                        "subscriptions": [
-                            {"topic": "crypto_prices",
-                             "type": "update", "filters": ""}
-                        ]
-                    }))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "action": "subscribe",
+                                "subscriptions": [
+                                    {
+                                        "topic": "crypto_prices_chainlink",
+                                        "type": "update",
+                                        "filters": "",
+                                    }
+                                ],
+                            }
+                        )
+                    )
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "action": "subscribe",
+                                "subscriptions": [
+                                    {
+                                        "topic": "crypto_prices",
+                                        "type": "update",
+                                        "filters": "",
+                                    }
+                                ],
+                            }
+                        )
+                    )
                     while self._running:
                         try:
                             raw = await asyncio.wait_for(
@@ -299,8 +322,12 @@ class PriceFeeds:
                 if self._running:
                     self._rtds_reconnects += 1
                     delay = min(3 * (2 ** min(self._rtds_reconnects - 1, 4)), 60)
-                    log.warning("RTDS disconnected (%d total): %s — "
-                                "reconnecting in %.0fs", self._rtds_reconnects, e, delay)
+                    log.warning(
+                        "RTDS disconnected (%d total): %s — reconnecting in %.0fs",
+                        self._rtds_reconnects,
+                        e,
+                        delay,
+                    )
                     await asyncio.sleep(delay)
 
     async def run_binance(self):
@@ -333,8 +360,11 @@ class PriceFeeds:
             except Exception as e:
                 if self._running:
                     self._binance_reconnects += 1
-                    log.warning("Binance disconnected (%d total): %s",
-                                self._binance_reconnects, e)
+                    log.warning(
+                        "Binance disconnected (%d total): %s",
+                        self._binance_reconnects,
+                        e,
+                    )
                     delay = min(3 * (2 ** min(self._binance_reconnects - 1, 4)), 60)
                     await asyncio.sleep(delay)
 
@@ -370,8 +400,7 @@ class PriceFeeds:
             return
         data = msg.get("data", {})
         stream = msg.get("stream", "")
-        asset = self._symbol_to_asset(
-            stream.split("@")[0] if "@" in stream else "")
+        asset = self._symbol_to_asset(stream.split("@")[0] if "@" in stream else "")
         if not asset:
             return
         bb = float(data.get("b", 0))
@@ -391,6 +420,8 @@ class PriceFeeds:
             return "ETH"
         if "sol" in s:
             return "SOL"
+        if "hype" in s:
+            return "HYPE"
         return ""
 
     def stop(self):
