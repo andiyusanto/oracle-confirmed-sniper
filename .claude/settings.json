@@ -71,7 +71,8 @@
       "Bash(curl -s \"https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1713542400\")",
       "Bash(curl -s 'https://gamma-api.polymarket.com/events?slug=__TRACKED_VAR__')",
       "Bash(venv/bin/ruff format *)",
-      "Bash(python3 -m ruff check /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/core/config.py /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/feeds/prices.py)"
+      "Bash(python3 -m ruff check /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/core/config.py /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/feeds/prices.py)",
+      "Bash(awk 'NR==1 || NR%30==0')"
     ]
   }
 }
