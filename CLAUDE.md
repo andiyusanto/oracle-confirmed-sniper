@@ -7,8 +7,8 @@
 - **Web Search**: Use `web_search` for any library released or updated after 2024 (Polymarket APIs, py-clob-client-v2, web3.py).
 
 ## Python Standards
-- **Environment**: Always assume we are in a virtual environment at `venv/`. Run `pip list` to verify installed packages.
-- **Linter**: Run `ruff check .` and `ruff format .` after every edit.
+- **Environment**: Virtual environment is at `.venv/` (not `venv/`). Activate: `source .venv/bin/activate`. Run `pip list` to verify installed packages.
+- **Linter**: Run `ruff check .` and `ruff format .` after every edit. If `ruff` is not on PATH, use `source .venv/bin/activate && ruff ...`.
 - **Type hints**: Required on all functions and class fields. Never suggest code without `typing` annotations.
 - **Pathlib**: Use `pathlib.Path` for file operations. Never hardcode OS paths.
 - **Style**: PEP 8 strictly.
@@ -23,7 +23,19 @@ Trades Polymarket 5-minute and 15-minute BTC/ETH/SOL prediction markets by readi
 
 **Only trades UP direction** — DOWN oracle signals are anti-predictive (WR=11.1% historically).
 
+**Only 5-minute markets trade** — 15-minute markets are in `CFG.durations` but produce zero fills structurally: by T-75s in a 900s window, 13.75 minutes of pricing time has already pushed YES tokens above `max_token_price=0.67`. This is expected behavior, not a bug.
+
+**Assets**: BTC, ETH, SOL, HYPE (4 assets as of May 2026).
+
 **Structural edge**: Chainlink settles Polymarket CTF markets, so its current value IS the resolution answer, readable in real-time via RTDS WebSocket.
+
+## Bot Startup Command
+
+```bash
+python3 bot.py --live --confirm-live --accept-risk
+```
+
+All three flags are required for live mode. Without `--confirm-live` and `--accept-risk` the bot falls back to paper trading silently. Run inside the `oracle_confirmed_sniper_bot` tmux window.
 
 ## Architecture at a Glance
 
@@ -49,10 +61,10 @@ Trades Polymarket 5-minute and 15-minute BTC/ETH/SOL prediction markets by readi
 
 ## Signal Gate Order (all must pass)
 
-1. UTC hour NOT in blackout set `{0, 2, 6, 7, 17}`
+1. UTC hour NOT in blackout set `{0, 1, 2, 6, 7, 17}`
 2. Oracle direction == UP
 3. Time remaining within snipe window (T-75s / T-55s / T-40s by delta tier)
-4. Chainlink delta ≥ `min_delta_pct` (0.012%) from window opening
+4. Chainlink delta ≥ `min_delta_pct` (0.100% EXTREME only — STRONG tier confirmed negative EV) from window opening
 5. Binance agrees with Chainlink direction
 6. Token YES price in `$0.55–$0.67` (above $0.67 → negative EV at taker fee)
 7. Confidence score ≥ threshold AND edge ≥ 6%
@@ -86,7 +98,7 @@ Polymarket launched Exchange V2 on April 28, 2026. **This changed the collateral
 ## CLOB Client Library
 
 - **Package**: `py-clob-client-v2` (replaces `py-clob-client`)
-- **Import module name**: `py_clob_client` (unchanged — no import changes needed in bot code)
+- **Import module name**: `py_clob_client_v2` — all bot imports use this explicitly (e.g. `from py_clob_client_v2.client import ClobClient`)
 - **Install**: `pip install py-clob-client-v2`
 
 ## Known RPC Quirk — Stale State
@@ -102,15 +114,52 @@ When writing on-chain tx scripts:
 
 `setup.py` calls `get_balance_allowance()` and may show `Allowance: $0.00 ❌`. This is a **cosmetic false alarm** — the CLOB backend's allowance view is unreliable. What matters is the on-chain `approve()` executed by `approve_usdc.py`. Do not attempt to fix this warning by changing setup.py logic.
 
+## `invalid signature` — Diagnosis and Auto-Recovery
+
+This error means the CLOB rejected the order's cryptographic signature. **Credentials do not expire on a time schedule** — confirmed from Polymarket docs. Known causes:
+
+| Cause | Fix |
+|-------|-----|
+| Bot not restarted after credential refresh | Restart bot — it loads `.env` only at startup |
+| Server clock drift | `sudo timedatectl set-ntp true` — verify `System clock synchronized: yes` |
+| Platform contract migration (e.g. V2 on Apr 28) | Update to new SDK, re-derive credentials |
+
+**Auto-recovery is built in** (`execution/executor.py` → `_refresh_credentials()`): on `invalid signature`, the bot automatically calls `create_or_derive_api_key()`, hot-reloads credentials into the live CLOB client, writes new credentials to `.env`, and retries the order once — no restart needed. Throttled to once per 60s.
+
+Manual fallback if auto-refresh fails: `python3 get_creds.py` then restart the bot.
+
+**Do not use POLY_PROXY wallet credentials** — the bot uses `sig_type=0` (EOA direct). Frontend-generated proxy keys are incompatible with V2 auth.
+
+**NTP must be active on the server**: `timedatectl status` should show `System clock synchronized: yes` and `NTP service: active`. Even a few seconds of clock skew causes intermittent auth failures.
+
+## Two-Bot Setup
+
+Two bots run in separate tmux windows on different wallets — no credential conflicts:
+
+| tmux window | Bot | Regime | Wallet |
+|-------------|-----|--------|--------|
+| `oracle_confirmed_sniper_bot` | This bot | Bull (UP only) | `0xF04EF5B9...` |
+| `bear-shadow_bot` | Bear bot | Bear | Separate wallet |
+
 ---
 
 # Current Live Performance Context
 
 - **Live since**: April 18, 2026
-- **Portfolio**: ~$59.93 pUSD
-- **Observed WR**: 58.1% (25/43 trades as of Apr 29, 2026) — below breakeven of 62.2%
+- **Portfolio**: ~$59.93 pUSD (as of May 6, 2026)
+- **Observed WR**: 58.1% (25/43 real fills as of Apr 29, 2026) — below breakeven of 62.2%
 - **Expectancy**: −$0.20/trade (negative)
 - **Known risk**: −$3 losses may indicate ghost-zone entries (TTL ≤ 15s slipping through `snipe_exit_sec=16` guard)
+- **No fills Apr 29 – May 6**: Two sequential failures — `order_version_mismatch` (V1 library on Apr 29), then `invalid signature` (stale credentials May 1–6). All 56 post-migration signals were CANCELLED. Fixed by auto-refresh in executor.py.
+
+**Per-asset EV (n=43 fills)**:
+| Asset | n | WR | EV/trade |
+|-------|---|----|---------|
+| BTC | 18 | 67% | +$0.19 |
+| SOL | 12 | 58% | −$0.13 |
+| ETH | 13 | 46% | −$0.81 |
+
+ETH is the primary loss source. Monitor: if ETH WR stays below 50% past n=20 fills, consider filtering it.
 
 When reviewing live trade data, always compare WR against 62.2% breakeven first. If WR < 60% over 20+ trades, escalate — that is a regime change, not noise.
 

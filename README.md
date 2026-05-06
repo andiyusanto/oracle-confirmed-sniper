@@ -1,6 +1,6 @@
 # Oracle-Confirmed Sniper (Strategy D)
 
-A Polymarket trading bot that combines **oracle-lead detection** with **end-cycle sniping** on BTC, ETH and SOL 5-minute and 15-minute prediction markets.
+A Polymarket trading bot that combines **oracle-lead detection** with **end-cycle sniping** on BTC, ETH, SOL and HYPE 5-minute prediction markets.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ flowchart TD
     end
 
     subgraph Execution["execution/"]
-        EX["Executor\nexecutor.py\n· execute(signal)\n· _execute_live()\n· close_expired()\n· _compute_pnl()"]
+        EX["Executor\nexecutor.py\n· execute(signal)\n· _execute_live()\n· _refresh_credentials()\n· close_expired()\n· _compute_pnl()"]
     end
 
     subgraph Core["core/"]
@@ -102,7 +102,7 @@ The bot exploits a structural edge: Chainlink oracle prices resolve Polymarket's
 | 2 — Snipe execution | T-75s to T-16s | If oracle confirms AND token is in range → execute |
 
 **All conditions must be true to trade:**
-1. Current UTC hour is NOT in blackout set `{0, 2, 6, 7, 17}` — market-open volatility windows
+1. Current UTC hour is NOT in blackout set `{0, 1, 2, 6, 7, 17}` — market-open volatility windows
 2. Oracle direction is UP — DOWN signals are anti-predictive in bull conditions (WR=11.1%)
 3. Time remaining is within the snipe window (tiered by delta strength: T-75s / T-55s / T-40s)
 4. Chainlink oracle has moved at least `min_delta_pct` from the window's opening price
@@ -582,10 +582,10 @@ tmux new-session -d -s bot -n bot
 tmux new-window -t bot -n analyze
 
 # Window 1 (bot): run the bot
-tmux send-keys -t bot:bot "cd ~/oracle-confirmed-sniper && source venv/bin/activate && python3 bot.py --live --confirm-live --accept-risk" Enter
+tmux send-keys -t bot:bot "cd ~/oracle-confirmed-sniper && source .venv/bin/activate && python3 bot.py --live --confirm-live --accept-risk" Enter
 
 # Window 2 (analyze): live analysis dashboard
-tmux send-keys -t bot:analyze "cd ~/oracle-confirmed-sniper && source venv/bin/activate && python3 analyze.py --watch --interval 60 --days 7" Enter
+tmux send-keys -t bot:analyze "cd ~/oracle-confirmed-sniper && source .venv/bin/activate && python3 analyze.py --watch --interval 60 --days 7" Enter
 
 # Attach to the session
 tmux attach -t bot
@@ -627,9 +627,9 @@ tmux kill-session -t bot       # stop everything
 ### Oracle thresholds
 | Parameter | Value | Description |
 |---|---|---|
-| `min_delta_pct` | 0.012% | Minimum delta to consider |
-| `strong_delta_pct` | 0.05% | Strong signal threshold |
-| `extreme_delta_pct` | 0.10% | Near-certain outcome threshold |
+| `min_delta_pct` | 0.100% | EXTREME tier minimum — STRONG tier (0.05–0.10%) confirmed negative EV (n=16, WR=31.2%) |
+| `strong_delta_pct` | 0.100% | Kept in sync with min_delta_pct — STRONG tier is filtered |
+| `extreme_delta_pct` | 0.100% | Near-certain outcome threshold |
 
 ### Direction and price filter
 | Parameter | Value | Description |
@@ -641,12 +641,13 @@ tmux kill-session -t bot       # stop everything
 
 ### UTC blackout hours
 ```
-blackout_hours_utc = [0, 2, 6, 7, 17]
+blackout_hours_utc = [0, 1, 2, 6, 7, 17]
 ```
 
 | UTC Hour | Local event | Why it's bad |
 |----------|-------------|--------------|
 | 00–02 UTC | Asia equity open (08:00–10:00 SGT) | Oracle spikes on HK/SG correlation, reverts before CTF settlement |
+| 01 UTC | Asia equity open (tail) | n=6 WR=50% — insufficient data, blocked as precaution |
 | 06–07 UTC | EU pre-market + London/Frankfurt open | Same spike-reversion pattern |
 | 17 UTC | US midday (13:00 EST) | HFT activity peak creates volatility CTF doesn't track |
 
@@ -682,13 +683,27 @@ Trades are stored in `hybrid_trades.db` (SQLite). Logs are written to `hybrid.lo
 
 ## Markets Supported
 
-BTC, ETH and SOL on both 5-minute and 15-minute Polymarket prediction markets. Configurable in `core/config.py` via `assets` and `durations` — adding or removing any asset automatically updates all WebSocket subscriptions, market discovery slugs and price routing.
+BTC, ETH, SOL and HYPE on 5-minute Polymarket prediction markets. Configurable in `core/config.py` via `assets` and `durations`.
 
-## Live Performance (115 + 43 Trades, Apr 18–29 2026)
+> **15-minute markets produce zero fills** — they are in `CFG.durations` but structurally blocked: by T-75s in a 900s window, 13.75 minutes of market pricing has already pushed YES tokens above `max_token_price=0.67`. This is expected, not a bug.
 
-> **Exchange V2 note (Apr 28, 2026):** Polymarket's full exchange upgrade broke the bot on April 29 — the CLOB backend began reporting $0 balance because it switched to checking pUSD instead of USDC.e. The bot was restored the same day via `wrap_pusd.py` + `approve_usdc.py` + `py-clob-client-v2`. Portfolio currently at $59.93.
+## Live Performance (43 Real Fills, Apr 24–29 2026)
 
-**Current live stats (43 trades, Apr 24–29):** WR 58.1% (25/43), Total P&L −$8.56, Expectancy −$0.20/trade. Breakeven WR at avg entry $0.61 is 62.2% — currently running 4.1pp below breakeven. Monitor closely: the -$3 loss pattern may indicate ghost-zone entries (TTL ≤ 15s) slipping through the `snipe_exit_sec=16` guard.
+> **Exchange V2 migration (Apr 28, 2026):** Polymarket switched collateral from USDC.e to pUSD. Bot was migrated via `wrap_pusd.py` + `approve_usdc.py` + `py-clob-client-v2`.
+>
+> **Post-V2 downtime (Apr 29 – May 6):** Two sequential auth failures caused 56 signals to CANCEL with zero fills: `order_version_mismatch` on Apr 29 (V1 library still running), then `invalid signature` May 1–6 (stale API credentials never reloaded after library swap). Fixed by adding **auto-credential refresh** to `execution/executor.py` — on auth failure the bot now automatically re-derives credentials and retries the order without a restart.
+
+**Current live stats (43 real fills, Apr 24–29):** WR 58.1% (25/43), Total P&L −$8.56, Expectancy −$0.20/trade. Breakeven WR at avg entry $0.61 is 62.2% — currently running 4.1pp below breakeven.
+
+**Per-asset breakdown:**
+
+| Asset | n | WR | EV/trade | Notes |
+|-------|---|----|---------|-------|
+| BTC | 18 | 67% | +$0.19 | Only profitable asset |
+| SOL | 12 | 58% | −$0.13 | Near breakeven |
+| ETH | 13 | 46% | −$0.81 | Primary loss source — monitor |
+
+Monitor ETH: if WR stays below 50% past n=20 fills, filter it from `CFG.assets`.
 
 All figures from in-sample filtering of 115 live EXPIRED trades (Apr 18–23). Expect 20–30% out-of-sample degradation.
 
