@@ -58,6 +58,9 @@ class Executor:
         self._circuit_reason = ""
         self._circuit_ts = 0.0
 
+        # Credential auto-refresh throttle
+        self._last_cred_refresh_ts: float = 0.0
+
         # Initialize authenticated CLOB client for live mode
         if is_live and HAS_CLOB:
             self._init_clob_client()
@@ -87,6 +90,58 @@ class Executor:
         except Exception as e:
             log.error("Failed to init CLOB client: %s", e)
             self._clob = None
+
+    def _refresh_credentials(self) -> bool:
+        """Auto-derive fresh API credentials and hot-reload the CLOB client.
+
+        Throttled to once per 60s to avoid hammering the auth endpoint.
+        Writes new credentials to .env so they survive the next restart too.
+        """
+        now = time.time()
+        if now - self._last_cred_refresh_ts < 60:
+            log.warning(
+                "CRED REFRESH: skipping — last refresh was %.0fs ago",
+                now - self._last_cred_refresh_ts,
+            )
+            return False
+
+        try:
+            from pathlib import Path
+            from py_clob_client_v2.constants import POLYGON
+            from dotenv import set_key
+
+            log.warning("CRED REFRESH: deriving new API credentials...")
+            temp_client = ClobClient(
+                host=CFG.clob_host,
+                chain_id=POLYGON,
+                key=CFG.private_key,
+                signature_type=CFG.sig_type,
+                funder=CFG.funder_address or None,
+            )
+            new_creds = temp_client.create_or_derive_api_key()
+
+            env_path = str(Path(".env"))
+            set_key(env_path, "POLY_API_KEY", new_creds.api_key)
+            set_key(env_path, "POLY_API_SECRET", new_creds.api_secret)
+            set_key(env_path, "POLY_API_PASSPHRASE", new_creds.api_passphrase)
+
+            CFG.api_key = new_creds.api_key
+            CFG.api_secret = new_creds.api_secret
+            CFG.api_passphrase = new_creds.api_passphrase
+
+            self._init_clob_client()
+            self._last_cred_refresh_ts = now
+            log.warning(
+                "CRED REFRESH: success — new key %s...%s, CLOB client reinitialized",
+                new_creds.api_key[:8],
+                new_creds.api_key[-4:],
+            )
+            return True
+
+        except Exception as e:
+            log.error("CRED REFRESH FAILED: %s", e)
+            self._last_cred_refresh_ts = now  # still throttle to avoid hammering
+            return False
 
     def cancel_all_orders(self) -> bool:
         """Cancel all open CLOB orders. Called on kill switch activation.
@@ -233,11 +288,12 @@ class Executor:
         self._last_order_ts = now
         return trade
 
-    def _execute_live(self, signal: Signal, trade: Trade) -> bool:
+    def _execute_live(self, signal: Signal, trade: Trade, _retry: bool = False) -> bool:
         """Place a real order on Polymarket.
 
         Includes circuit breaker: if a fatal error (geoblock, auth) is
         detected, all future orders are blocked until bot restart.
+        On invalid signature, auto-refreshes credentials and retries once.
         """
         if not self._clob:
             log.error("LIVE ORDER FAILED: CLOB client not initialized")
@@ -250,10 +306,15 @@ class Executor:
         try:
             # Step 1: Read order book to get real prices
             book = self._clob.get_order_book(signal.token.token_id)
-            _raw_asks = book.get("asks") if isinstance(book, dict) else (book.asks or [])
+            _raw_asks = (
+                book.get("asks") if isinstance(book, dict) else (book.asks or [])
+            )
             asks = sorted(
-                [float(a["price"] if isinstance(a, dict) else a.price) for a in (_raw_asks or [])
-                 if float(a["price"] if isinstance(a, dict) else a.price) > 0]
+                [
+                    float(a["price"] if isinstance(a, dict) else a.price)
+                    for a in (_raw_asks or [])
+                    if float(a["price"] if isinstance(a, dict) else a.price) > 0
+                ]
             )
 
             if not asks:
@@ -422,12 +483,16 @@ class Executor:
                 )
                 return False
 
-            # Credential / signature errors — API key not registered or wrong sig_type.
-            # Fix: re-run get_creds.py then restart the bot.
+            # Credential / signature errors — auto-refresh once, then retry.
             if "invalid signature" in err_str or "order_version_mismatch" in err_str:
+                if not _retry and self._refresh_credentials():
+                    log.warning(
+                        "CRED REFRESH: retrying order once with fresh credentials"
+                    )
+                    return self._execute_live(signal, trade, _retry=True)
                 log.error(
-                    "LIVE ORDER AUTH FAILURE (%s): API credentials rejected. "
-                    "Re-run get_creds.py then restart the bot.",
+                    "LIVE ORDER AUTH FAILURE (%s): credential auto-refresh failed. "
+                    "Re-run get_creds.py manually then restart the bot.",
                     e,
                 )
                 return False
@@ -480,10 +545,15 @@ class Executor:
 
         try:
             book = self._clob.get_order_book(token_id)
-            _raw_bids = book.get("bids") if isinstance(book, dict) else (book.bids or [])
+            _raw_bids = (
+                book.get("bids") if isinstance(book, dict) else (book.bids or [])
+            )
             bids = sorted(
-                [float(b["price"] if isinstance(b, dict) else b.price) for b in (_raw_bids or [])
-                 if float(b["price"] if isinstance(b, dict) else b.price) > 0],
+                [
+                    float(b["price"] if isinstance(b, dict) else b.price)
+                    for b in (_raw_bids or [])
+                    if float(b["price"] if isinstance(b, dict) else b.price) > 0
+                ],
                 reverse=True,
             )
 
