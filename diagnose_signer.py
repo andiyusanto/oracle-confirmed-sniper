@@ -24,7 +24,24 @@ print(f"POLY_SIG_TYPE:            {env.get('POLY_SIG_TYPE')}")
 print(f"POLY_FUNDER_ADDRESS:      {env.get('POLY_FUNDER_ADDRESS') or '(empty)'}")
 print()
 
-w3 = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
+RPCS = [
+    "https://polygon.llamarpc.com",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon-rpc.com",
+]
+w3 = None
+for rpc in RPCS:
+    try:
+        candidate = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 8}))
+        _ = candidate.eth.chain_id
+        w3 = candidate
+        print(f"using RPC: {rpc}")
+        break
+    except Exception as e:
+        print(f"  rpc {rpc} failed: {e}")
+if w3 is None:
+    raise SystemExit("no working RPC")
 PUSD = Web3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
 USDCe = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 ABI = [
