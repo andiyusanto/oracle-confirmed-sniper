@@ -92,8 +92,16 @@ Polymarket launched Exchange V2 on April 28, 2026. **This changed the collateral
 | pUSD (active collateral) | `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` |
 | Collateral Onramp | `0x93070a847efEf7F70739046A929D47a521F5B8ee` |
 | CTF Exchange V2 | `0xE111180000d2663C0091e4f400237545B87B996B` |
-| NegRisk CTF Exchange V2 | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
-| USDC Transfer Helper V2 | `0xe2222d279d744050d28e00520010520000310F59` |
+| NegRisk CTF Exchange V2 | `0xe2222d279d744050d28e00520010520000310F59` |
+| NegRisk Adapter (V1, still active) | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
+
+**IMPORTANT — V2 migration changed neg_risk for updown markets.** Pre-V2 BTC/ETH/SOL
+updown 5-min markets ran on the V1 NegRisk Exchange. On V2 they are NOT neg-risk
+and trade on the regular V2 exchange (`0xE111…`). Authoritative source is the
+CLOB market metadata `neg_risk` field per token. Never assume neg_risk based on
+asset name — Gamma's `negRisk:false` is correct, even though it looks wrong.
+Signing against the wrong verifyingContract is silent: server returns
+`{"error":"invalid signature"}` with no contract-specific hint.
 
 ## CLOB Client Library
 
