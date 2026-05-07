@@ -86,7 +86,8 @@
       "Read(//tmp/**)",
       "Bash(curl -sL \"https://raw.githubusercontent.com/Polymarket/py-clob-client-v2/1.0.1rc1/py_clob_client_v2/order_builder/builder.py\" -o /tmp/b_new.py)",
       "Bash(grep -iE \"LIVE FILLED|HYPE.*\\\\\\\\\\\\$|FILL.*HYPE|HYPE.*paper|paper.*HYPE|HYPE.*win|HYPE.*loss\" logs/2026-05-06_hybrid.log)",
-      "Bash(grep -v \"BN=\\\\$0\\\\.00\")"
+      "Bash(grep -v \"BN=\\\\$0\\\\.00\")",
+      "Bash(awk -F= '/^POLY_PRIVATE_KEY/{print \"raw line len:\", length\\($0\\); v=$2; gsub\\(/[\\\\r\\\\n\"\\\\047 ]/,\"\",v\\); print \"stripped val len:\", length\\(v\\); print \"first 4:\", substr\\(v,1,4\\); print \"last 4:\", substr\\(v,length\\(v\\)-3,4\\)}' /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/.env)"
     ]
   }
 }
