@@ -42,7 +42,7 @@ class Dashboard:
             Layout(name="right", ratio=1),
         )
         layout["left"].split_column(
-            Layout(name="prices", size=9),
+            Layout(name="prices", size=10),
             Layout(name="positions"),
         )
         layout["right"].split_column(
