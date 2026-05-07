@@ -261,13 +261,19 @@ class MarketDiscovery:
                     prices = json.loads(prices)
 
                 cid = m.get("conditionId") or m.get("condition_id") or ""
-                # BTC/ETH/SOL updown markets are always on NegRisk CTF Exchange.
-                # Prefer the API field; fall back to True for known NegRisk assets.
-                _nr_flag = m.get("enableNegRisk") or m.get("negRisk") or m.get("neg_risk")
-                if _nr_flag is None:
-                    neg_risk = asset in ("BTC", "ETH", "SOL")
-                else:
-                    neg_risk = bool(_nr_flag)
+                # Trust Gamma's flags as authoritative. Each may be present and
+                # explicitly False (not just missing), so check for None per-field
+                # rather than `or`-chaining (which collapses False→None).
+                # Default False: V2 BTC/ETH/SOL updown markets are NOT neg-risk
+                # (Polymarket migrated them to the regular V2 exchange on Apr 28
+                # 2026). Signing them against the NegRisk V2 verifyingContract
+                # produces an EIP-712 digest the server cannot verify.
+                nr = m.get("enableNegRisk")
+                if nr is None:
+                    nr = m.get("negRisk")
+                if nr is None:
+                    nr = m.get("neg_risk")
+                neg_risk = bool(nr) if nr is not None else False
 
                 for i, tid in enumerate(tids):
                     tid = str(tid)
