@@ -92,10 +92,17 @@ class Executor:
             self._clob = None
 
     def _refresh_credentials(self) -> bool:
-        """Auto-derive fresh API credentials and hot-reload the CLOB client.
+        """Rotate API credentials on the server and hot-reload the CLOB client.
+
+        The stale key on the server may be bound to an address/sig_type that
+        no longer matches the order signer (root cause of persistent
+        `invalid signature`: see py-clob-client-v2 issue #46). A plain
+        `derive_api_key` deterministically returns the SAME stale key, so we
+        must DELETE the existing key first, then `create_api_key` to mint a
+        fresh one bound to the current EOA + sig_type + funder.
 
         Throttled to once per 60s to avoid hammering the auth endpoint.
-        Writes new credentials to .env so they survive the next restart too.
+        Writes new credentials to .env so they survive the next restart.
         """
         now = time.time()
         if now - self._last_cred_refresh_ts < 60:
@@ -110,7 +117,22 @@ class Executor:
             from py_clob_client_v2.constants import POLYGON
             from dotenv import set_key
 
-            log.warning("CRED REFRESH: deriving new API credentials...")
+            # 1. DELETE the stale server-side key using the *current*
+            #    in-memory creds (HMAC-authed). If they're still partially
+            #    valid for L2, this wipes the bad binding. If not, we fall
+            #    through to create with L1 (EIP-712) auth.
+            if self._clob is not None:
+                try:
+                    log.warning("CRED REFRESH: deleting stale API key on server...")
+                    self._clob.delete_api_key()
+                    log.warning("CRED REFRESH: stale key deleted")
+                except Exception as del_err:
+                    # Common: 401 if HMAC is rotten. Not fatal — server may
+                    # already have purged it, or create_api_key will replace.
+                    log.warning("CRED REFRESH: delete failed (continuing): %s", del_err)
+
+            # 2. Create a FRESH key bound to current EOA + sig_type + funder.
+            log.warning("CRED REFRESH: creating new API credentials...")
             temp_client = ClobClient(
                 host=CFG.clob_host,
                 chain_id=POLYGON,
@@ -118,7 +140,18 @@ class Executor:
                 signature_type=CFG.sig_type,
                 funder=CFG.funder_address or None,
             )
-            new_creds = temp_client.create_or_derive_api_key()
+            try:
+                new_creds = temp_client.create_api_key()
+                source = "create"
+            except Exception as create_err:
+                # If create still fails (e.g. delete didn't propagate yet),
+                # fall back to derive — better than nothing.
+                log.warning(
+                    "CRED REFRESH: create_api_key failed (%s), falling back to derive",
+                    create_err,
+                )
+                new_creds = temp_client.derive_api_key()
+                source = "derive"
 
             env_path = str(Path(".env"))
             set_key(env_path, "POLY_API_KEY", new_creds.api_key)
@@ -132,7 +165,8 @@ class Executor:
             self._init_clob_client()
             self._last_cred_refresh_ts = now
             log.warning(
-                "CRED REFRESH: success — new key %s...%s, CLOB client reinitialized",
+                "CRED REFRESH: success via %s — new key %s...%s, CLOB client reinitialized",
+                source,
                 new_creds.api_key[:8],
                 new_creds.api_key[-4:],
             )

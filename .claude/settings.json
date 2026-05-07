@@ -74,7 +74,17 @@
       "Bash(python3 -m ruff check /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/core/config.py /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/feeds/prices.py)",
       "Bash(awk 'NR==1 || NR%30==0')",
       "Bash(python3 -m ruff check execution/executor.py)",
-      "Bash(python3 -m ruff format execution/executor.py)"
+      "Bash(python3 -m ruff format execution/executor.py)",
+      "Bash(awk -F= '/^POLY_PRIVATE_KEY/{print \"PK len:\", length\\($2\\), \"value:\", $2}' /home/tengkorakhitam/polymarket-arbitrage-bot/oracle-confirmed-sniper/.env)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api *)",
+      "Bash(curl -sL \"https://api.github.com/repos/Polymarket/py-clob-client-v2/compare/v1.0.0...1.0.1rc1\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f['filename'], '+', f.get\\('additions',0\\), '-', f.get\\('deletions',0\\)\\) for f in d.get\\('files',[]\\)]\")",
+      "Bash(curl -sL \"https://api.github.com/repos/Polymarket/py-clob-client-v2/compare/v1.0.0...1.0.1rc1\" -o /tmp/cmp.json)",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/tmp/cmp.json'\\)\\); [print\\(f['filename'], '+', f.get\\('additions',0\\), '-', f.get\\('deletions',0\\)\\) for f in d.get\\('files',[]\\)]\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/Polymarket/py-clob-client-v2/1.0.1rc1/py_clob_client_v2/order_utils/exchange_order_builder_v2.py\" -o /tmp/builder_v2_new.py)",
+      "Read(//tmp/**)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/Polymarket/py-clob-client-v2/1.0.1rc1/py_clob_client_v2/order_builder/builder.py\" -o /tmp/b_new.py)"
     ]
   }
 }
