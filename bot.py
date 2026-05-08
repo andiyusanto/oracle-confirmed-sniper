@@ -32,6 +32,7 @@ from core.config import CFG
 from core.database import Database
 from core import telegram
 from core import redeem
+from core import wrap as auto_wrap
 from feeds.prices import PriceFeeds
 from feeds.markets import MarketDiscovery
 from engine.signal import HybridEngine
@@ -190,6 +191,9 @@ async def run(is_live: bool, portfolio: float):
                     "Startup: corrected false-WIN to LOSS for conditionId=%s", _cid[:18]
                 )
         if _s_usdc > 0:
+            # Auto-wrap freshly-redeemed USDC.e → pUSD and ensure V2 approvals
+            # so capital_verifier sees the new pUSD balance and doesn't pause.
+            await auto_wrap.auto_wrap_and_approve_async()
             executor.sync_balance()
             await telegram.notify_redeemed(_s_count, _s_usdc)
             log.info(
@@ -343,6 +347,10 @@ async def run(is_live: bool, portfolio: float):
                                     _pnl_delta,
                                     risk.portfolio,
                                 )
+                        if total_usdc > 0:
+                            # Wrap USDC.e → pUSD before resyncing so the CLOB
+                            # balance reflects the freshly-converted collateral.
+                            await auto_wrap.auto_wrap_and_approve_async()
                         if count > 0:
                             loop = asyncio.get_running_loop()
                             await loop.run_in_executor(None, executor.sync_balance)
@@ -418,6 +426,7 @@ async def run(is_live: bool, portfolio: float):
                                 risk.portfolio,
                             )
                     if p_usdc > 0:
+                        await auto_wrap.auto_wrap_and_approve_async()
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, executor.sync_balance)
                         log.info(
