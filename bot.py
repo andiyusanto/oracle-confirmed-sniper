@@ -95,6 +95,14 @@ log = logging.getLogger("hybrid.main")
 
 
 async def run(is_live: bool, portfolio: float):
+    # Enable asyncio's real slow-callback detector. This logs only when a
+    # *single synchronous callback* (non-await work between yields) takes
+    # longer than the threshold — i.e. true event-loop blocks that would
+    # starve the WS feed readers. Unlike our wall-clock iteration timer,
+    # it ignores time spent inside `await` calls. 0.25s = 250ms.
+    _loop = asyncio.get_running_loop()
+    _loop.slow_callback_duration = 0.25
+
     log.info("=" * 60)
     log.info("  HYBRID ORACLE SNIPER — Strategy D")
     log.info("  Mode: %s  Portfolio: $%.2f", "LIVE" if is_live else "PAPER", portfolio)
@@ -228,21 +236,24 @@ async def run(is_live: bool, portfolio: float):
     _STATUS_LOG_INTERVAL = 60.0  # log oracle status every 60s
     _kill_switch_actioned: bool = False  # cancel + notify fires only once
 
-    # Loop-stall detector: any iteration that takes longer than this is
-    # almost certainly a synchronous CLOB/RPC call that slipped through
-    # the run_in_executor net. A stall starves the WS feed readers and
-    # can kill the heartbeat, leaving the bot blind mid-window.
-    _LOOP_STALL_WARN_SEC = 0.30
+    # Catastrophic-iteration detector: wall-clock time of one main-loop
+    # iteration. This includes time spent inside `await`s (network IO,
+    # market discovery, book refresh) so a "stall" here is not necessarily
+    # a sync block. asyncio's slow_callback_duration above catches those.
+    # We only flag iterations long enough to risk missing an entry window
+    # (entry tier is T-40s; ttl < 16s is the ghost zone).
+    _ITER_WARN_SEC = 1.5
     _loop_iter_start: float = time.time()
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
             while True:
                 _iter_elapsed = time.time() - _loop_iter_start
-                if _iter_elapsed > _LOOP_STALL_WARN_SEC:
+                if _iter_elapsed > _ITER_WARN_SEC:
                     log.warning(
-                        "LOOP STALL: previous iteration took %.0fms — "
-                        "a sync call is blocking the asyncio loop",
+                        "SLOW ITERATION: previous loop took %.0fms — "
+                        "investigate if persistent (asyncio slow-callback "
+                        "warnings would indicate a real sync block)",
                         _iter_elapsed * 1000,
                     )
                 _loop_iter_start = time.time()
