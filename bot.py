@@ -43,6 +43,7 @@ from ui.dashboard import Dashboard
 # ── Logging ─────────────────────────────────────────────────────────
 
 
+
 def _setup_logging():
     """Configure logging with daily rotation into logs/ folder.
 
