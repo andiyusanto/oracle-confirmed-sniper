@@ -126,8 +126,8 @@ async def run(is_live: bool, portfolio: float):
     # sync_balance() must run first — it tells the CLOB to refresh its ledger
     # from on-chain state so get_wallet_balance() returns the current value.
     if is_live:
-        executor.sync_balance()
-        wallet_balance = executor.get_wallet_balance()
+        await executor.sync_balance_async()
+        wallet_balance = await executor.get_wallet_balance_async()
         if wallet_balance > 0:
             portfolio = wallet_balance
             log.info("Wallet balance: $%.2f (using as portfolio)", portfolio)
@@ -141,7 +141,7 @@ async def run(is_live: bool, portfolio: float):
     verifier = executor.verifier  # shared CapitalVerifier instance
 
     # Opening portfolio snapshot
-    clob_balance = executor.get_wallet_balance() if is_live else None
+    clob_balance = await executor.get_wallet_balance_async() if is_live else None
     verifier.snapshot(portfolio, "bot_start", clob_balance)
 
     # Start feed tasks
@@ -194,13 +194,13 @@ async def run(is_live: bool, portfolio: float):
             # Auto-wrap freshly-redeemed USDC.e → pUSD and ensure V2 approvals
             # so capital_verifier sees the new pUSD balance and doesn't pause.
             await auto_wrap.auto_wrap_and_approve_async()
-            executor.sync_balance()
+            await executor.sync_balance_async()
             await telegram.notify_redeemed(_s_count, _s_usdc)
             log.info(
                 "Startup redemption: %d position(s) $%.4f USDC.e", _s_count, _s_usdc
             )
         elif _s_count > 0:
-            executor.sync_balance()
+            await executor.sync_balance_async()
 
     # Telegram: bot started
     mode_str = "LIVE" if is_live else "PAPER"
@@ -228,9 +228,24 @@ async def run(is_live: bool, portfolio: float):
     _STATUS_LOG_INTERVAL = 60.0  # log oracle status every 60s
     _kill_switch_actioned: bool = False  # cancel + notify fires only once
 
+    # Loop-stall detector: any iteration that takes longer than this is
+    # almost certainly a synchronous CLOB/RPC call that slipped through
+    # the run_in_executor net. A stall starves the WS feed readers and
+    # can kill the heartbeat, leaving the bot blind mid-window.
+    _LOOP_STALL_WARN_SEC = 0.30
+    _loop_iter_start: float = time.time()
+
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
             while True:
+                _iter_elapsed = time.time() - _loop_iter_start
+                if _iter_elapsed > _LOOP_STALL_WARN_SEC:
+                    log.warning(
+                        "LOOP STALL: previous iteration took %.0fms — "
+                        "a sync call is blocking the asyncio loop",
+                        _iter_elapsed * 1000,
+                    )
+                _loop_iter_start = time.time()
                 now = time.time()
 
                 # Periodic oracle/market status log — diagnose why trades aren't firing
@@ -352,8 +367,7 @@ async def run(is_live: bool, portfolio: float):
                             # balance reflects the freshly-converted collateral.
                             await auto_wrap.auto_wrap_and_approve_async()
                         if count > 0:
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(None, executor.sync_balance)
+                            await executor.sync_balance_async()
                         if total_usdc > 0:
                             log.info(
                                 "Auto-redeemed %d position(s) ($%.4f USDC.e) to wallet",
@@ -364,7 +378,7 @@ async def run(is_live: bool, portfolio: float):
                             _redeem_pending_ts = 0.0
                             _last_redeem_attempt_ts = 0.0
                             _redeem_slow_alerted = False
-                            clob_post = executor.get_wallet_balance()
+                            clob_post = await executor.get_wallet_balance_async()
                             verifier.snapshot(risk.portfolio, "after_redeem", clob_post)
                         elif count > 0:
                             log.info(
@@ -427,8 +441,7 @@ async def run(is_live: bool, portfolio: float):
                             )
                     if p_usdc > 0:
                         await auto_wrap.auto_wrap_and_approve_async()
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, executor.sync_balance)
+                        await executor.sync_balance_async()
                         log.info(
                             "Periodic redeem: %d position(s) $%.4f USDC.e",
                             p_count,
@@ -438,8 +451,7 @@ async def run(is_live: bool, portfolio: float):
                         _redeem_pending_ts = 0.0
                         _last_redeem_attempt_ts = 0.0
                     elif p_count > 0:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, executor.sync_balance)
+                        await executor.sync_balance_async()
                     else:
                         log.info("Periodic check: no redeemable positions")
 
@@ -462,7 +474,7 @@ async def run(is_live: bool, portfolio: float):
                     if risk.kill_switch and reason.startswith("kill switch"):
                         if not _kill_switch_actioned:
                             _kill_switch_actioned = True
-                            executor.cancel_all_orders()
+                            await executor.cancel_all_orders_async()
                             await telegram.notify_kill_switch(
                                 reason, db.daily_pnl(), risk.portfolio
                             )
@@ -494,7 +506,7 @@ async def run(is_live: bool, portfolio: float):
                         continue
 
                     # Execute
-                    trade = executor.execute(signal)
+                    trade = await executor.execute_async(signal)
                     # Always mark window as traded — prevents the same window from
                     # re-firing on every loop iteration when live execution fails
                     # (CANCELLED trade). Without this, one failed window generates
@@ -568,7 +580,9 @@ async def run(is_live: bool, portfolio: float):
                                     delta,
                                     now - first_rev,
                                 )
-                                sold = executor.sell_position(wkey, token_id, trade)
+                                sold = await executor.sell_position_async(
+                                    wkey, token_id, trade
+                                )
                                 if sold:
                                     risk.on_trade_closed(trade.pnl)
                                     await telegram.notify_trade_closed(trade)
@@ -591,7 +605,7 @@ async def run(is_live: bool, portfolio: float):
             t.cancel()
 
         # Closing portfolio snapshot
-        clob_stop = executor.get_wallet_balance() if is_live else None
+        clob_stop = await executor.get_wallet_balance_async() if is_live else None
         verifier.snapshot(risk.portfolio, "bot_stop", clob_stop)
 
         # Final stats

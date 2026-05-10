@@ -42,7 +42,12 @@ class PriceFeeds:
         # Priority 5: silent-freeze watchdog timestamps
         self._rtds_last_msg_ts: float = 0.0
         self._binance_last_msg_ts: float = 0.0
-        _WS_SILENCE_TIMEOUT = 60  # seconds — RTDS goes quiet during low volatility
+        # Was 60s — too long. A blocking call on the main loop can starve
+        # WS heartbeats; if the server closes the socket and recv() hangs,
+        # we'd wait a full minute before reconnecting and miss the entire
+        # 5-min trading window. 25s is well past normal silence (Chainlink
+        # publishes every 1-10s in practice) but recovers fast on stall.
+        _WS_SILENCE_TIMEOUT = 25
 
         for a in CFG.assets:
             self.chainlink[a] = 0.0
@@ -254,7 +259,7 @@ class PriceFeeds:
         """Seconds since last Chainlink update."""
         return time.time() - self.cl_ts.get(asset, 0)
 
-    _WS_SILENCE_TIMEOUT = 60  # seconds without a message → force reconnect
+    _WS_SILENCE_TIMEOUT = 25  # seconds without a message → force reconnect
 
     async def run_rtds(self):
         """Connect to Polymarket RTDS for Chainlink + Binance prices.

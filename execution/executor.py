@@ -8,8 +8,14 @@ Fixes applied:
   5. Correct fee math on both win AND loss
   6. Final delta snapshot before window expiry
   7. Live exit on oracle delta reversal (sell_position)
+  8. Async wrappers (`*_async`) for every blocking CLOB call so the asyncio
+     event loop is never starved during order placement, sells, cancels, or
+     balance fetches. Synchronous order-signing previously froze the WS
+     readers for 500ms+ per fill, killing both Chainlink and Binance
+     heartbeats and stranding the bot mid-window.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -90,6 +96,33 @@ class Executor:
         except Exception as e:
             log.error("Failed to init CLOB client: %s", e)
             self._clob = None
+
+    # ── Async wrappers ─────────────────────────────────────────────────
+    # Every method here delegates to a thread pool so the asyncio loop
+    # is never blocked by py_clob_client's synchronous `requests`-based
+    # HTTP calls. The sync methods remain available for scripts and tests.
+
+    async def execute_async(self, signal: Signal) -> Optional[Trade]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.execute, signal)
+
+    async def sell_position_async(self, wkey: str, token_id: str, trade: Trade) -> bool:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self.sell_position, wkey, token_id, trade
+        )
+
+    async def cancel_all_orders_async(self) -> bool:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.cancel_all_orders)
+
+    async def sync_balance_async(self) -> bool:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.sync_balance)
+
+    async def get_wallet_balance_async(self) -> float:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_wallet_balance)
 
     def _refresh_credentials(self) -> bool:
         """Rotate API credentials on the server and hot-reload the CLOB client.
