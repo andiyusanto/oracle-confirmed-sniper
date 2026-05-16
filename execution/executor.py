@@ -36,6 +36,7 @@ try:
     from py_clob_client_v2.clob_types import (
         ApiCreds,
         OrderArgs,
+        OrderType,
         PartialCreateOrderOptions,
         BalanceAllowanceParams,
         AssetType,
@@ -433,11 +434,18 @@ class Executor:
             # Step 3: Get tick size
             tick_size = self._clob.get_tick_size(signal.token.token_id)
 
-            # Step 4: Precision-safe price + size (Decimal, ROUND_DOWN)
-            # Prevents float artifacts like 4.9999... rounding to 4.99 < min_shares
+            # Step 4: Precision-safe price + size.
+            # Price is rounded UP to the next cent so the order is always
+            # marketable against `best_ask`. Rounding DOWN (the previous
+            # behaviour) silently turned the bid into a resting maker order
+            # whenever best_ask landed on a sub-cent (e.g. 0.665 → bid 0.66),
+            # so no fill happened and no pUSD left the wallet — yet the bot
+            # still saved the trade as OPEN and booked phantom PnL at expiry.
+            # Clamped to max_token_price (already verified above).
             price_d = float(
-                Decimal(str(best_ask)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+                Decimal(str(best_ask)).quantize(Decimal("0.01"), rounding=ROUND_UP)
             )
+            price_d = min(price_d, CFG.max_token_price)
             shares = float(
                 Decimal(str(signal.size_usdc / best_ask)).quantize(
                     Decimal("0.01"), rounding=ROUND_DOWN
@@ -485,24 +493,60 @@ class Executor:
                 neg_risk=signal.token.neg_risk,
             )
 
-            resp = self._clob.create_and_post_order(order_args, options)
+            # Fill-Or-Kill: the exchange matches as much as it can immediately
+            # and kills any remainder. Guarantees taker semantics — no order
+            # ever sits on the book as a maker. Combined with the matched-
+            # amount check below, this eliminates the phantom-OPEN class of
+            # bugs (orderID returned without any pUSD actually leaving the
+            # wallet).
+            resp = self._clob.create_and_post_order(
+                order_args, options, order_type=OrderType.FOK
+            )
 
-            # Parse response
-            order_id = None
-            if resp and isinstance(resp, dict):
-                order_id = resp.get("orderID") or resp.get("id")
-            elif resp and hasattr(resp, "orderID"):
-                order_id = resp.orderID
+            # Parse response — orderID alone is NOT proof of fill. A resting
+            # GTC order also returns an orderID. We require both an orderID
+            # and explicit evidence the exchange matched something:
+            #   status in {matched, filled}, OR
+            #   takingAmount/makingAmount > 0
+            def _g(key):
+                if not resp:
+                    return None
+                if isinstance(resp, dict):
+                    return resp.get(key)
+                return getattr(resp, key, None)
 
-            if order_id:
+            order_id = _g("orderID") or _g("id")
+            status = (str(_g("status") or "")).lower()
+            success_flag = _g("success")
+            err_msg = str(_g("errorMsg") or _g("error") or "").strip()
+
+            def _f(v):
+                try:
+                    return float(v) if v not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    return 0.0
+
+            matched_taking = _f(_g("takingAmount")) or _f(_g("matchedAmount"))
+            matched_making = _f(_g("makingAmount"))
+            matched = (
+                status in ("matched", "filled")
+                or matched_taking > 0
+                or matched_making > 0
+            )
+
+            if order_id and matched:
                 trade.entry_price = price_d
+                # Prefer actual matched amount when reported, else fall back
+                # to the requested notional. (FOK should match all-or-nothing,
+                # but defend against schema drift.)
+                actual_usdc = matched_taking if matched_taking > 0 else shares * price_d
                 trade.size_usdc = float(
-                    Decimal(str(shares * price_d)).quantize(
+                    Decimal(str(actual_usdc)).quantize(
                         Decimal("0.01"), rounding=ROUND_DOWN
                     )
                 )
                 log.info(
-                    "LIVE FILLED: %s %s %s @ $%.4f size=$%.2f shares=%.2f order=%s",
+                    "LIVE FILLED: %s %s %s @ $%.4f size=$%.2f shares=%.2f order=%s status=%s",
                     trade.asset,
                     trade.direction,
                     trade.side,
@@ -510,11 +554,29 @@ class Executor:
                     trade.size_usdc,
                     shares,
                     order_id,
+                    status or "ok",
                 )
                 return True
-            else:
-                log.warning("LIVE ORDER no fill: %s", resp)
+
+            if order_id and not matched:
+                log.warning(
+                    "LIVE ORDER KILLED (FOK no match): %s %s — status=%s err=%s "
+                    "(no pUSD spent, no position opened)",
+                    trade.asset,
+                    trade.direction,
+                    status or "unknown",
+                    err_msg or "n/a",
+                )
                 return False
+
+            log.warning(
+                "LIVE ORDER no fill: success=%s status=%s err=%s resp=%s",
+                success_flag,
+                status or "n/a",
+                err_msg or "n/a",
+                resp,
+            )
+            return False
 
         except Exception as e:
             err_str = str(e).lower()
