@@ -49,12 +49,22 @@ from core.config import CFG
 log = logging.getLogger("reconcile")
 
 # ── On-chain constants ───────────────────────────────────────────────
+# Ordered for archive friendliness — publicnode is intentionally LAST
+# because it prunes historical blocks (eth_getBlockByNumber and getLogs
+# fail on anything older than ~128 blocks).
 POLYGON_RPCS = [
+    "https://polygon.llamarpc.com",
+    "https://polygon-rpc.com",
+    "https://polygon.drpc.org",
+    "https://1rpc.io/matic",
     "https://rpc.ankr.com/polygon",
     "https://polygon-mainnet.public.blastapi.io",
-    "https://polygon-bor-rpc.publicnode.com",
-    "https://polygon-rpc.com",
+    "https://polygon-bor-rpc.publicnode.com",  # pruned — last resort
 ]
+# Average Polygon block time used to estimate block numbers from
+# timestamps without needing a historical block lookup (which pruned
+# RPCs reject). 2.1s is a stable long-run figure.
+POLYGON_AVG_BLOCK_SEC = 2.1
 PUSD = Web3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
 USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 
@@ -70,7 +80,11 @@ CHUNK_BLOCKS = 130_000
 SIZE_TOL_FRAC = 0.10
 
 # Time window around opened_at for matching pUSD-out events.
-MATCH_WINDOW_SEC = 90
+# Generous because we estimate block timestamps arithmetically (~2.1s
+# per block) instead of fetching them — short-term jitter can put the
+# estimate ±30s off. The bot's cooldown_sec gate prevents back-to-back
+# trades within this window so ambiguity is not a real concern.
+MATCH_WINDOW_SEC = 180
 
 
 @dataclass
@@ -87,13 +101,21 @@ class Transfer:
 # ── Web3 plumbing ────────────────────────────────────────────────────
 
 
-def connect() -> Web3:
+def connect(skip: Optional[set[str]] = None) -> tuple[Web3, str]:
+    """Connect to the first reachable Polygon RPC not in `skip`.
+
+    Returns (web3, rpc_url) so the caller can rotate to a different RPC
+    when the current one returns pruning errors on historical queries.
+    """
+    skip = skip or set()
     for rpc in POLYGON_RPCS:
+        if rpc in skip:
+            continue
         try:
             w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 12}))
             if w3.is_connected():
                 log.info("RPC: %s", rpc)
-                return w3
+                return w3, rpc
         except Exception:
             continue
     raise RuntimeError("No Polygon RPC reachable")
@@ -106,51 +128,100 @@ def eoa_from_pk(pk: str) -> str:
 
 
 def block_for_ts(w3: Web3, target_ts: int) -> int:
-    """Binary search block number nearest to a Unix timestamp.
+    """Estimate the block number at a target Unix timestamp.
 
-    Polygon has stable ~2s blocks but we don't trust that for cross-day
-    spans (validator gaps happen). 8 round-trips is enough.
+    Uses arithmetic from chain head — head_block - (head_ts - target_ts) / 2.1.
+    The previous binary search did `get_block(mid)` lookups against
+    historical blocks, which pruned public RPCs reject with -32701
+    ("History has been pruned"). The old code's `except: return lo`
+    silently returned 1, producing a 1→1 scan and zero matches.
+
+    Slight imprecision is fine: getLogs is then run over [start, end] of
+    blocks and individual log matches are timestamped per-block on demand.
+    A few hundred blocks of slack on either side costs nothing.
     """
-    lo, hi = 1, w3.eth.block_number
-    while lo + 1 < hi:
-        mid = (lo + hi) // 2
-        try:
-            blk_ts = w3.eth.get_block(mid).timestamp
-        except Exception:
-            return lo
-        if blk_ts < target_ts:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+    head = w3.eth.block_number
+    head_ts = w3.eth.get_block(head).timestamp
+    delta_sec = head_ts - target_ts
+    blocks_back = int(delta_sec / POLYGON_AVG_BLOCK_SEC)
+    return max(1, head - blocks_back)
 
 
 def _addr_topic(addr: str) -> str:
     return "0x" + addr.lower().replace("0x", "").rjust(64, "0")
 
 
+class RpcRotator:
+    """Holds a live web3 + tries fresh RPCs on pruning / fatal errors."""
+
+    def __init__(self, w3: Web3, rpc: str):
+        self.w3 = w3
+        self.rpc = rpc
+        self.dead: set[str] = set()
+        self._head_block: Optional[int] = None
+        self._head_ts: Optional[int] = None
+
+    def rotate(self) -> bool:
+        """Switch to a different RPC. Returns False if no more available."""
+        self.dead.add(self.rpc)
+        try:
+            self.w3, self.rpc = connect(skip=self.dead)
+        except RuntimeError:
+            return False
+        # Invalidate head cache — different RPC, may differ slightly.
+        self._head_block = None
+        return True
+
+    def estimate_ts(self, block_num: int) -> int:
+        """Estimate a block's timestamp without calling get_block."""
+        if self._head_block is None:
+            self._head_block = self.w3.eth.block_number
+            self._head_ts = self.w3.eth.get_block(self._head_block).timestamp
+        delta_blocks = self._head_block - block_num
+        return int(self._head_ts - delta_blocks * POLYGON_AVG_BLOCK_SEC)
+
+
+def _is_pruned_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "pruned" in msg or "-32701" in msg or "history" in msg
+
+
+def _is_range_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return (
+        "range" in msg
+        or "limit" in msg
+        or "exceed" in msg
+        or "too large" in msg
+        or "too many" in msg
+    )
+
+
 def fetch_transfers(
-    w3: Web3,
+    rpc: RpcRotator,
     wallet: str,
     token_addr: str,
     token_label: str,
     start_block: int,
     end_block: int,
 ) -> list[Transfer]:
-    """Pull ALL ERC20 Transfers IN+OUT for `wallet` on `token_addr`."""
+    """Pull ALL ERC20 Transfers IN+OUT for `wallet` on `token_addr`.
+
+    Rotates RPC automatically on -32701 (history pruned). Estimates each
+    log's timestamp from arithmetic instead of per-block lookups (which
+    public RPCs frequently refuse on pruned ranges).
+    """
     wallet_cs = Web3.to_checksum_address(wallet)
     topic_wallet = _addr_topic(wallet_cs)
     transfers: list[Transfer] = []
-    block_ts_cache: dict[int, int] = {}
 
     def _get_logs(from_b: int, to_b: int, indexed_pos: int) -> list:
         """indexed_pos=1 → from==wallet (OUT); 2 → to==wallet (IN)."""
         topics: list = [TRANSFER_TOPIC, None, None]
         topics[indexed_pos] = topic_wallet
-        # Trim trailing Nones for cleaner request
         while topics and topics[-1] is None:
             topics.pop()
-        return w3.eth.get_logs(
+        return rpc.w3.eth.get_logs(
             {
                 "fromBlock": from_b,
                 "toBlock": to_b,
@@ -160,21 +231,35 @@ def fetch_transfers(
         )
 
     cursor = start_block
+    current_chunk = CHUNK_BLOCKS
     while cursor <= end_block:
-        chunk_end = min(cursor + CHUNK_BLOCKS - 1, end_block)
+        chunk_end = min(cursor + current_chunk - 1, end_block)
         for indexed_pos, direction in ((1, "OUT"), (2, "IN")):
-            for attempt in range(4):
+            logs = None
+            for attempt in range(6):
                 try:
                     logs = _get_logs(cursor, chunk_end, indexed_pos)
                     break
                 except Exception as e:
-                    msg = str(e).lower()
-                    if "range" in msg or "limit" in msg or "exceed" in msg:
-                        # Shrink and retry
-                        chunk_end = cursor + max(1, (chunk_end - cursor) // 2)
+                    if _is_pruned_error(e):
+                        log.warning(
+                            "RPC %s prunes this range — rotating",
+                            rpc.rpc,
+                        )
+                        if not rpc.rotate():
+                            log.error(
+                                "All RPCs exhausted on pruning errors. "
+                                "Use a paid archive RPC (Alchemy/Infura)."
+                            )
+                            return transfers
+                        continue
+                    if _is_range_error(e):
+                        new_chunk = max(1000, (chunk_end - cursor + 1) // 2)
+                        chunk_end = cursor + new_chunk - 1
+                        current_chunk = new_chunk
                         log.warning(
                             "RPC range limit, shrinking chunk to %d blocks",
-                            chunk_end - cursor + 1,
+                            new_chunk,
                         )
                         continue
                     log.warning(
@@ -186,7 +271,7 @@ def fetch_transfers(
                         e,
                     )
                     time.sleep(1.5 * (attempt + 1))
-            else:
+            if logs is None:
                 log.error(
                     "Giving up on %s blocks %s-%s %s",
                     token_label,
@@ -198,8 +283,7 @@ def fetch_transfers(
 
             for lg in logs:
                 blk = lg["blockNumber"]
-                if blk not in block_ts_cache:
-                    block_ts_cache[blk] = w3.eth.get_block(blk).timestamp
+                ts = rpc.estimate_ts(blk)
                 from_addr = "0x" + lg["topics"][1].hex()[-40:]
                 to_addr = "0x" + lg["topics"][2].hex()[-40:]
                 counterparty = to_addr if direction == "OUT" else from_addr
@@ -207,7 +291,7 @@ def fetch_transfers(
                 transfers.append(
                     Transfer(
                         block=blk,
-                        ts=block_ts_cache[blk],
+                        ts=ts,
                         tx=lg["transactionHash"].hex(),
                         direction=direction,
                         counterparty=Web3.to_checksum_address(counterparty),
@@ -340,7 +424,7 @@ def main() -> int:
         log.warning("Nothing to reconcile. Done.")
         return 0
 
-    w3 = connect()
+    w3, rpc_url = connect()
     start_block = block_for_ts(w3, since_ts - 60)
     end_block = block_for_ts(w3, until_ts + 60)
     log.info(
@@ -350,10 +434,11 @@ def main() -> int:
         end_block - start_block,
     )
 
+    rpc = RpcRotator(w3, rpc_url)
     log.info("Fetching pUSD transfers...")
-    pusd_x = fetch_transfers(w3, wallet, PUSD, "pUSD", start_block, end_block)
+    pusd_x = fetch_transfers(rpc, wallet, PUSD, "pUSD", start_block, end_block)
     log.info("Fetching USDC.e transfers...")
-    usdce_x = fetch_transfers(w3, wallet, USDC_E, "USDC.e", start_block, end_block)
+    usdce_x = fetch_transfers(rpc, wallet, USDC_E, "USDC.e", start_block, end_block)
     transfers = pusd_x + usdce_x
     log.info(
         "On-chain:    %d pUSD + %d USDC.e = %d transfers",
