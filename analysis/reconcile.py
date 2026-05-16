@@ -154,6 +154,31 @@ def eoa_from_pk(pk: str) -> str:
     return Account.from_key(pk).address
 
 
+def _head_block_and_ts(w3: Web3) -> tuple[int, int]:
+    """Get a (block_number, timestamp) pair for a recent block.
+
+    Some free RPCs return `eth_blockNumber` for a head their own
+    `eth_getBlockByNumber` can't yet serve (race between nodes in a load
+    balancer pool). Try `latest`, then walk back a few stride sizes
+    before giving up so the caller can rotate.
+    """
+    # Try the canonical "latest" first — usually safest, the same RPC will
+    # return whatever block it actually has.
+    try:
+        blk = w3.eth.get_block("latest")
+        return blk.number, blk.timestamp
+    except Exception:
+        pass
+    head = w3.eth.block_number
+    for back in (0, 5, 50, 500, 5_000):
+        try:
+            blk = w3.eth.get_block(max(1, head - back))
+            return blk.number, blk.timestamp
+        except Exception:
+            continue
+    raise RuntimeError("Cannot fetch a head block from this RPC")
+
+
 def block_for_ts(w3: Web3, target_ts: int) -> int:
     """Estimate the block number at a target Unix timestamp.
 
@@ -167,8 +192,7 @@ def block_for_ts(w3: Web3, target_ts: int) -> int:
     blocks and individual log matches are timestamped per-block on demand.
     A few hundred blocks of slack on either side costs nothing.
     """
-    head = w3.eth.block_number
-    head_ts = w3.eth.get_block(head).timestamp
+    head, head_ts = _head_block_and_ts(w3)
     delta_sec = head_ts - target_ts
     blocks_back = int(delta_sec / POLYGON_AVG_BLOCK_SEC)
     return max(1, head - blocks_back)
@@ -492,9 +516,22 @@ def main() -> int:
         log.warning("Nothing to reconcile. Done.")
         return 0
 
-    w3, rpc_url = connect()
-    start_block = block_for_ts(w3, since_ts - 60)
-    end_block = block_for_ts(w3, until_ts + 60)
+    # Pick an RPC that can actually serve a head block (some free RPCs
+    # return eth_blockNumber for a block their getBlockByNumber can't yet
+    # answer — rotate past those).
+    dead: set[str] = set()
+    while True:
+        w3, rpc_url = connect(skip=dead)
+        try:
+            start_block = block_for_ts(w3, since_ts - 60)
+            end_block = block_for_ts(w3, until_ts + 60)
+            break
+        except Exception as e:
+            log.warning("RPC %s cannot serve head block (%s) — rotating", rpc_url, e)
+            dead.add(rpc_url)
+            if len(dead) >= len(POLYGON_RPCS):
+                log.error("All RPCs failed to serve a head block. Aborting.")
+                return 3
     log.info(
         "Block range: %d → %d (~%d blocks)",
         start_block,
