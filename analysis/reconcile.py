@@ -101,6 +101,30 @@ class Transfer:
 # ── Web3 plumbing ────────────────────────────────────────────────────
 
 
+def _inject_poa_middleware(w3: Web3) -> None:
+    """Polygon is a PoA chain with extended `extraData` — web3.py raises
+    `ExtraDataLengthError` on get_block() without this middleware. The
+    import path differs across web3.py versions; try both."""
+    try:
+        # web3.py >= 6.x
+        from web3.middleware import ExtraDataToPOAMiddleware
+
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        return
+    except ImportError:
+        pass
+    try:
+        # web3.py 5.x / early 6.x
+        from web3.middleware import geth_poa_middleware
+
+        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+    except ImportError:
+        log.warning(
+            "No PoA middleware found in web3.py — get_block() may fail "
+            "on Polygon's extended extraData field."
+        )
+
+
 def connect(skip: Optional[set[str]] = None) -> tuple[Web3, str]:
     """Connect to the first reachable Polygon RPC not in `skip`.
 
@@ -114,6 +138,7 @@ def connect(skip: Optional[set[str]] = None) -> tuple[Web3, str]:
         try:
             w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 12}))
             if w3.is_connected():
+                _inject_poa_middleware(w3)
                 log.info("RPC: %s", rpc)
                 return w3, rpc
         except Exception:
