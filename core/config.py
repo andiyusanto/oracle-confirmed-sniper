@@ -85,12 +85,13 @@ class Config:
     require_binance_agrees: bool = True
 
     # ── Confidence scoring ──────────────────────────────────────────
-    # Empirically validated on n=29 REAL_FILL trades (Apr 28 – May 17 2026
-    # via analysis/reconcile.py): conf>=75 → WR 69%, EV +$0.40/trade;
-    # conf<75 → WR 57%, EV -$0.34/trade. Both tiers raised to 75 because
-    # the strong-delta tier showed the same break-point.
-    min_confidence: float = 70.0
-    min_confidence_strong: float = 70.0
+    # Empirically validated on REAL_FILL trades (Apr 28 – May 17 2026 via
+    # analysis/reconcile.py). The conf 70-74 bucket is anomalously bad
+    # (n=18, WR=39%, EV=-$1.15) — worse than conf<70. conf>=75 stays
+    # profitable: 75-80 EV=+$0.41 n=16, >=80 EV=+$0.96 n=10. Net at >=75
+    # is +$16/19d vs -$5/19d at >=70.
+    min_confidence: float = 75.0
+    min_confidence_strong: float = 75.0
     # Score components:
     #   delta_score:    0-40 (how far oracle moved from open)
     #   time_score:     0-30 (less time = more certain)
@@ -131,7 +132,10 @@ class Config:
     # NOTE: previous config had [7] derived from local time (WIB=UTC+7). UTC 0 = 07:00 WIB.
     # UTC 01: Asia equity open (missed from 00-02 range, n=6 WR=50%)
     # UTC 18-19: n=4 each — insufficient data (upper CI >62% breakeven), revisit at n≥15
-    blackout_hours_utc: list = field(default_factory=lambda: [0, 1, 2, 6, 7, 17])
+    # UTC 08: London open in winter (GMT) — adjacent to existing 06-07 blackout.
+    # Real-fill data May 2026 (n=5): WR=40%, EV=-$1.20. Direction consistent
+    # across DB-level and reconciled-fill cuts. Adding pre-emptively.
+    blackout_hours_utc: list = field(default_factory=lambda: [0, 1, 2, 6, 7, 8, 17])
 
     # ── Fee structure ───────────────────────────────────────────────
     # Orders are placed at best_ask → immediate match → taker in practice.
