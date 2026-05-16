@@ -57,8 +57,13 @@ from core.config import CFG
 
 log = logging.getLogger("reconcile")
 
-# ── Polygonscan ──────────────────────────────────────────────────────
-POLYGONSCAN_URL = "https://api.polygonscan.com/api"
+# ── Etherscan V2 (unified multi-chain endpoint) ──────────────────────
+# As of late 2024 Etherscan unified all chain APIs behind one endpoint
+# and one API key. The legacy api.polygonscan.com still works for some
+# endpoints but increasingly returns "Missing/Invalid API Key" without
+# explanation. V2 + chainid=137 is the current officially-supported path.
+ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
+POLYGON_CHAIN_ID = 137
 POLYGONSCAN_PAGE_SIZE = 10_000  # API max
 
 # ── Token addresses ──────────────────────────────────────────────────
@@ -123,6 +128,7 @@ def fetch_transfers(
     page = 1
     while True:
         params = {
+            "chainid": POLYGON_CHAIN_ID,
             "module": "account",
             "action": "tokentx",
             "address": wallet,
@@ -139,14 +145,14 @@ def fetch_transfers(
         log.info("  %s: fetching page %d...", token_label, page)
         for attempt in range(5):
             try:
-                r = requests.get(POLYGONSCAN_URL, params=params, timeout=30)
+                r = requests.get(ETHERSCAN_V2_URL, params=params, timeout=30)
                 r.raise_for_status()
                 data = r.json()
                 break
             except Exception as e:
                 wait = 5 * (attempt + 1)
                 log.warning(
-                    "Polygonscan %s p%d attempt %d failed (%s) — retrying in %ds",
+                    "Etherscan %s p%d attempt %d failed (%s) — retrying in %ds",
                     token_label,
                     page,
                     attempt + 1,
@@ -155,7 +161,7 @@ def fetch_transfers(
                 )
                 time.sleep(wait)
         else:
-            log.error("Polygonscan %s p%d gave up after 5 attempts", token_label, page)
+            log.error("Etherscan %s p%d gave up after 5 attempts", token_label, page)
             break
 
         status = str(data.get("status"))
@@ -164,19 +170,35 @@ def fetch_transfers(
 
         # status "0" + message "No transactions found" → empty result is OK.
         if status != "1":
-            if isinstance(result, str) and "rate limit" in result.lower():
-                log.warning("Polygonscan rate-limited — sleeping 10s")
+            result_text = result if isinstance(result, str) else ""
+            if "rate limit" in (result_text + message).lower():
+                log.warning("Etherscan rate-limited — sleeping 10s")
                 time.sleep(10)
                 continue
             if "no transactions" in message.lower():
                 log.info("  %s: no more transactions on page %d", token_label, page)
                 break
+            # Authentication / key errors — actionable for the user.
+            if (
+                "missing" in result_text.lower()
+                or "invalid api key" in result_text.lower()
+                or "api key" in result_text.lower()
+            ):
+                log.error(
+                    "Etherscan auth error: %s\n"
+                    "  → Get a free key at https://etherscan.io/myapikey "
+                    "(one key works for Polygon via chainid=137)\n"
+                    "  → Then: export POLYGONSCAN_API_KEY=YourKeyHere && rerun",
+                    result_text or message,
+                )
+                break
             log.warning(
-                "Polygonscan %s p%d: status=%s msg=%s",
+                "Etherscan %s p%d: status=%s msg=%s result=%s",
                 token_label,
                 page,
                 status,
                 message,
+                result_text or "(non-string)",
             )
             break
 
