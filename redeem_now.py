@@ -82,8 +82,13 @@ def main():
             len(positions), estimated_total))
 
     # ── Execute ───────────────────────────────────────────────────────
+    # redeem_all() returns 4-tuple:
+    #   count           — positions actually redeemed (tx succeeded)
+    #   total_usdc      — USDC.e received (0 for force-redeemed losses)
+    #   confirmed_losses — cids the oracle settled against us (skipped)
+    #   cancelled_cids   — cids whose market was cancelled (no payout)
     print()
-    count, total_usdc = redeem_all(force=force)
+    count, total_usdc, losses, cancelled = redeem_all(force=force)
 
     print()
     print(SEPARATOR)
@@ -93,6 +98,10 @@ def main():
         print(f"  ⚠️   {count}/{len(positions)} redeemed (${total_usdc:.2f} USDC.e). Check logs for failures.")
     else:
         print("  ❌  No positions were redeemed. Check logs for errors.")
+    if losses:
+        print(f"  ℹ️   {len(losses)} position(s) confirmed LOSS — skipped (would return $0).")
+    if cancelled:
+        print(f"  ℹ️   {len(cancelled)} market(s) CANCELLED — no payout possible.")
     print(SEPARATOR)
     print()
 
