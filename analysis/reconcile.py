@@ -20,13 +20,21 @@ Usage
 
 Outputs `analysis/reconcile_<since>_to_<until>.csv` and prints a summary.
 
-Notes
------
-- Reads from EOA derived from POLY_PRIVATE_KEY (sig_type=0, NOT a proxy).
-- Uses free public Polygon RPCs. Chunks getLogs into ~3-day spans to avoid
-  range limits and rate-limits between chunks.
-- Block timestamps are second-precision; trade timestamps sub-second. ±90s
-  matching window is wide enough given the bot's cooldown_sec gate.
+Data source
+-----------
+Polygonscan's `tokentx` REST endpoint — one paginated call per token
+returns the entire ERC20 transfer history for a wallet, with block
+timestamps included. This replaced the eth_getLogs approach because free
+public Polygon RPCs are increasingly hostile to historical log queries
+(pruning, 400 Bad Request on >1000-block chunks, etc).
+
+No API key is required for ad-hoc runs (rate-limited to 1 req/5s by
+Polygonscan). Set POLYGONSCAN_API_KEY in env for higher limits.
+
+Wallet
+------
+Reads from EOA derived from POLY_PRIVATE_KEY (sig_type=0, NOT a proxy).
+Override with --wallet for any other address.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -42,39 +51,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from web3 import Web3
+import requests
 
 from core.config import CFG
 
 log = logging.getLogger("reconcile")
 
-# ── On-chain constants ───────────────────────────────────────────────
-# Ordered for archive friendliness — publicnode is intentionally LAST
-# because it prunes historical blocks (eth_getBlockByNumber and getLogs
-# fail on anything older than ~128 blocks).
-POLYGON_RPCS = [
-    "https://polygon.llamarpc.com",
-    "https://polygon-rpc.com",
-    "https://polygon.drpc.org",
-    "https://1rpc.io/matic",
-    "https://rpc.ankr.com/polygon",
-    "https://polygon-mainnet.public.blastapi.io",
-    "https://polygon-bor-rpc.publicnode.com",  # pruned — last resort
-]
-# Average Polygon block time used to estimate block numbers from
-# timestamps without needing a historical block lookup (which pruned
-# RPCs reject). 2.1s is a stable long-run figure.
-POLYGON_AVG_BLOCK_SEC = 2.1
-PUSD = Web3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
-USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+# ── Polygonscan ──────────────────────────────────────────────────────
+POLYGONSCAN_URL = "https://api.polygonscan.com/api"
+POLYGONSCAN_PAGE_SIZE = 10_000  # API max
 
-# keccak("Transfer(address,address,uint256)")
-TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-
-# Polygon ~2s block time. 10k blocks ≈ 6 hours — small enough that free
-# RPCs accept it (drpc/llamarpc/1rpc free tiers reject ranges much larger).
-# Scanning ~3 weeks at this chunk size = ~80 chunks per token ≈ 2-3 minutes.
-CHUNK_BLOCKS = 10_000
+# ── Token addresses ──────────────────────────────────────────────────
+PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 # Match tolerance: trade.size_usdc vs on-chain amount.
 # Bot rounds shares to 0.01 with ROUND_DOWN, then FOK can return slightly
@@ -82,11 +71,10 @@ CHUNK_BLOCKS = 10_000
 SIZE_TOL_FRAC = 0.10
 
 # Time window around opened_at for matching pUSD-out events.
-# Generous because we estimate block timestamps arithmetically (~2.1s
-# per block) instead of fetching them — short-term jitter can put the
-# estimate ±30s off. The bot's cooldown_sec gate prevents back-to-back
-# trades within this window so ambiguity is not a real concern.
-MATCH_WINDOW_SEC = 180
+# Polygonscan returns real block timestamps (no estimation needed) so we
+# can keep this tight. The bot's cooldown_sec gate prevents back-to-back
+# trades inside this window so ambiguity is not a concern.
+MATCH_WINDOW_SEC = 90
 
 
 @dataclass
@@ -100,52 +88,10 @@ class Transfer:
     token: str  # "pUSD" or "USDC.e"
 
 
-# ── Web3 plumbing ────────────────────────────────────────────────────
-
-
-def _inject_poa_middleware(w3: Web3) -> None:
-    """Polygon is a PoA chain with extended `extraData` — web3.py raises
-    `ExtraDataLengthError` on get_block() without this middleware. The
-    import path differs across web3.py versions; try both."""
-    try:
-        # web3.py >= 6.x
-        from web3.middleware import ExtraDataToPOAMiddleware
-
-        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-        return
-    except ImportError:
-        pass
-    try:
-        # web3.py 5.x / early 6.x
-        from web3.middleware import geth_poa_middleware
-
-        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
-    except ImportError:
-        log.warning(
-            "No PoA middleware found in web3.py — get_block() may fail "
-            "on Polygon's extended extraData field."
-        )
-
-
-def connect(skip: Optional[set[str]] = None) -> tuple[Web3, str]:
-    """Connect to the first reachable Polygon RPC not in `skip`.
-
-    Returns (web3, rpc_url) so the caller can rotate to a different RPC
-    when the current one returns pruning errors on historical queries.
-    """
-    skip = skip or set()
-    for rpc in POLYGON_RPCS:
-        if rpc in skip:
-            continue
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 12}))
-            if w3.is_connected():
-                _inject_poa_middleware(w3)
-                log.info("RPC: %s", rpc)
-                return w3, rpc
-        except Exception:
-            continue
-    raise RuntimeError("No Polygon RPC reachable")
+def _checksum(addr: str) -> str:
+    """Best-effort EIP-55 checksum without pulling in web3. We only
+    use this for display; comparisons are done on lowercase."""
+    return addr  # Polygonscan returns mixed case already; keep as-is.
 
 
 def eoa_from_pk(pk: str) -> str:
@@ -154,252 +100,162 @@ def eoa_from_pk(pk: str) -> str:
     return Account.from_key(pk).address
 
 
-def _head_block_and_ts(w3: Web3) -> tuple[int, int]:
-    """Get a (block_number, timestamp) pair for a recent block.
-
-    Some free RPCs return `eth_blockNumber` for a head their own
-    `eth_getBlockByNumber` can't yet serve (race between nodes in a load
-    balancer pool). Try `latest`, then walk back a few stride sizes
-    before giving up so the caller can rotate.
-    """
-    # Try the canonical "latest" first — usually safest, the same RPC will
-    # return whatever block it actually has.
-    try:
-        blk = w3.eth.get_block("latest")
-        return blk.number, blk.timestamp
-    except Exception:
-        pass
-    head = w3.eth.block_number
-    for back in (0, 5, 50, 500, 5_000):
-        try:
-            blk = w3.eth.get_block(max(1, head - back))
-            return blk.number, blk.timestamp
-        except Exception:
-            continue
-    raise RuntimeError("Cannot fetch a head block from this RPC")
-
-
-def block_for_ts(w3: Web3, target_ts: int) -> int:
-    """Estimate the block number at a target Unix timestamp.
-
-    Uses arithmetic from chain head — head_block - (head_ts - target_ts) / 2.1.
-    The previous binary search did `get_block(mid)` lookups against
-    historical blocks, which pruned public RPCs reject with -32701
-    ("History has been pruned"). The old code's `except: return lo`
-    silently returned 1, producing a 1→1 scan and zero matches.
-
-    Slight imprecision is fine: getLogs is then run over [start, end] of
-    blocks and individual log matches are timestamped per-block on demand.
-    A few hundred blocks of slack on either side costs nothing.
-    """
-    head, head_ts = _head_block_and_ts(w3)
-    delta_sec = head_ts - target_ts
-    blocks_back = int(delta_sec / POLYGON_AVG_BLOCK_SEC)
-    return max(1, head - blocks_back)
-
-
-def _addr_topic(addr: str) -> str:
-    return "0x" + addr.lower().replace("0x", "").rjust(64, "0")
-
-
-class RpcRotator:
-    """Holds a live web3 + tries fresh RPCs on pruning / fatal errors."""
-
-    def __init__(self, w3: Web3, rpc: str):
-        self.w3 = w3
-        self.rpc = rpc
-        self.dead: set[str] = set()
-        self._head_block: Optional[int] = None
-        self._head_ts: Optional[int] = None
-
-    def rotate(self) -> bool:
-        """Switch to a different RPC. Returns False if no more available."""
-        self.dead.add(self.rpc)
-        try:
-            self.w3, self.rpc = connect(skip=self.dead)
-        except RuntimeError:
-            return False
-        # Invalidate head cache — different RPC, may differ slightly.
-        self._head_block = None
-        return True
-
-    def estimate_ts(self, block_num: int) -> int:
-        """Estimate a block's timestamp without calling get_block."""
-        if self._head_block is None:
-            self._head_block = self.w3.eth.block_number
-            self._head_ts = self.w3.eth.get_block(self._head_block).timestamp
-        delta_blocks = self._head_block - block_num
-        return int(self._head_ts - delta_blocks * POLYGON_AVG_BLOCK_SEC)
-
-
-def _is_pruned_error(e: Exception) -> bool:
-    msg = str(e).lower()
-    return "pruned" in msg or "-32701" in msg or "history" in msg
-
-
-def _is_range_error(e: Exception) -> bool:
-    msg = str(e).lower()
-    return (
-        "range" in msg
-        or "limit" in msg
-        or "exceed" in msg
-        or "too large" in msg
-        or "too many" in msg
-        or "response size" in msg
-        or "query returned more" in msg
-    )
-
-
-def _is_bad_request(e: Exception) -> bool:
-    """400-class errors from free RPCs that don't say WHY they refused.
-    Treat as 'this RPC doesn't want to serve us' → rotate."""
-    msg = str(e).lower()
-    return (
-        "400 client error" in msg
-        or "bad request" in msg
-        or "403" in msg
-        or "forbidden" in msg
-        or "unauthorized" in msg
-        or "rate limit" in msg
-        or "429" in msg
-    )
+# ── Polygonscan client ────────────────────────────────────────────────
 
 
 def fetch_transfers(
-    rpc: RpcRotator,
     wallet: str,
     token_addr: str,
     token_label: str,
-    start_block: int,
-    end_block: int,
+    since_ts: int,
+    until_ts: int,
+    api_key: str,
 ) -> list[Transfer]:
-    """Pull ALL ERC20 Transfers IN+OUT for `wallet` on `token_addr`.
+    """Fetch all ERC20 transfers for `wallet` on `token_addr` via Polygonscan.
 
-    Rotates RPC automatically on -32701 (history pruned). Estimates each
-    log's timestamp from arithmetic instead of per-block lookups (which
-    public RPCs frequently refuse on pruned ranges).
+    Paginates by page number until a page returns fewer than PAGE_SIZE
+    records. Filters by timestamp client-side (Polygonscan accepts a block
+    range, but we use 0..99999999 and filter to keep one source of truth
+    on dates).
     """
-    wallet_cs = Web3.to_checksum_address(wallet)
-    topic_wallet = _addr_topic(wallet_cs)
+    wallet_lc = wallet.lower()
     transfers: list[Transfer] = []
+    page = 1
+    while True:
+        params = {
+            "module": "account",
+            "action": "tokentx",
+            "address": wallet,
+            "contractaddress": token_addr,
+            "page": page,
+            "offset": POLYGONSCAN_PAGE_SIZE,
+            "startblock": 0,
+            "endblock": 99_999_999,
+            "sort": "asc",
+        }
+        if api_key:
+            params["apikey"] = api_key
 
-    def _get_logs(from_b: int, to_b: int, indexed_pos: int) -> list:
-        """indexed_pos=1 → from==wallet (OUT); 2 → to==wallet (IN)."""
-        topics: list = [TRANSFER_TOPIC, None, None]
-        topics[indexed_pos] = topic_wallet
-        while topics and topics[-1] is None:
-            topics.pop()
-        return rpc.w3.eth.get_logs(
-            {
-                "fromBlock": from_b,
-                "toBlock": to_b,
-                "address": token_addr,
-                "topics": topics,
-            }
-        )
-
-    cursor = start_block
-    current_chunk = CHUNK_BLOCKS
-    while cursor <= end_block:
-        chunk_end = min(cursor + current_chunk - 1, end_block)
-        for indexed_pos, direction in ((1, "OUT"), (2, "IN")):
-            logs = None
-            for attempt in range(6):
-                try:
-                    logs = _get_logs(cursor, chunk_end, indexed_pos)
-                    break
-                except Exception as e:
-                    if _is_pruned_error(e):
-                        log.warning("RPC %s prunes this range — rotating", rpc.rpc)
-                        if not rpc.rotate():
-                            log.error(
-                                "All RPCs exhausted on pruning errors. "
-                                "Use a paid archive RPC (Alchemy/Infura)."
-                            )
-                            return transfers
-                        continue
-                    if _is_bad_request(e):
-                        # Free RPCs that refuse the request without a reason —
-                        # try a smaller chunk once, then rotate.
-                        if current_chunk > 2000:
-                            new_chunk = max(2000, current_chunk // 2)
-                            chunk_end = cursor + new_chunk - 1
-                            current_chunk = new_chunk
-                            log.warning(
-                                "RPC %s 400 Bad Request — shrinking to %d "
-                                "blocks before rotating",
-                                rpc.rpc,
-                                new_chunk,
-                            )
-                            continue
-                        log.warning(
-                            "RPC %s rejects 2k-block chunks — rotating", rpc.rpc
-                        )
-                        if not rpc.rotate():
-                            log.error(
-                                "All RPCs refused the request. "
-                                "Try a paid RPC (Alchemy/Infura free tier works)."
-                            )
-                            return transfers
-                        # After rotate, retry with original chunk size on new RPC.
-                        current_chunk = CHUNK_BLOCKS
-                        chunk_end = min(cursor + current_chunk - 1, end_block)
-                        continue
-                    if _is_range_error(e):
-                        new_chunk = max(1000, (chunk_end - cursor + 1) // 2)
-                        chunk_end = cursor + new_chunk - 1
-                        current_chunk = new_chunk
-                        log.warning(
-                            "RPC range limit, shrinking chunk to %d blocks",
-                            new_chunk,
-                        )
-                        continue
-                    log.warning(
-                        "getLogs %s %s-%s attempt %d: %s",
-                        token_label,
-                        cursor,
-                        chunk_end,
-                        attempt + 1,
-                        e,
-                    )
-                    time.sleep(1.5 * (attempt + 1))
-            if logs is None:
-                log.error(
-                    "Giving up on %s blocks %s-%s %s",
+        log.info("  %s: fetching page %d...", token_label, page)
+        for attempt in range(5):
+            try:
+                r = requests.get(POLYGONSCAN_URL, params=params, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                break
+            except Exception as e:
+                wait = 5 * (attempt + 1)
+                log.warning(
+                    "Polygonscan %s p%d attempt %d failed (%s) — retrying in %ds",
                     token_label,
-                    cursor,
-                    chunk_end,
-                    direction,
+                    page,
+                    attempt + 1,
+                    e,
+                    wait,
                 )
-                continue
+                time.sleep(wait)
+        else:
+            log.error("Polygonscan %s p%d gave up after 5 attempts", token_label, page)
+            break
 
-            for lg in logs:
-                blk = lg["blockNumber"]
-                ts = rpc.estimate_ts(blk)
-                from_addr = "0x" + lg["topics"][1].hex()[-40:]
-                to_addr = "0x" + lg["topics"][2].hex()[-40:]
-                counterparty = to_addr if direction == "OUT" else from_addr
-                amount_raw = int(lg["data"].hex() or "0x0", 16)
-                transfers.append(
-                    Transfer(
-                        block=blk,
-                        ts=ts,
-                        tx=lg["transactionHash"].hex(),
-                        direction=direction,
-                        counterparty=Web3.to_checksum_address(counterparty),
-                        amount_usdc=amount_raw / 1e6,
-                        token=token_label,
-                    )
+        status = str(data.get("status"))
+        message = str(data.get("message", ""))
+        result = data.get("result", [])
+
+        # status "0" + message "No transactions found" → empty result is OK.
+        if status != "1":
+            if isinstance(result, str) and "rate limit" in result.lower():
+                log.warning("Polygonscan rate-limited — sleeping 10s")
+                time.sleep(10)
+                continue
+            if "no transactions" in message.lower():
+                log.info("  %s: no more transactions on page %d", token_label, page)
+                break
+            log.warning(
+                "Polygonscan %s p%d: status=%s msg=%s",
+                token_label,
+                page,
+                status,
+                message,
+            )
+            break
+
+        if not isinstance(result, list):
+            log.warning("Unexpected result type for %s p%d", token_label, page)
+            break
+
+        n_window = 0
+        for tx in result:
+            try:
+                ts = int(tx["timeStamp"])
+            except (KeyError, ValueError):
+                continue
+            if ts < since_ts or ts >= until_ts:
+                continue
+            n_window += 1
+            from_addr = tx.get("from", "").lower()
+            to_addr = tx.get("to", "").lower()
+            if from_addr == wallet_lc:
+                direction = "OUT"
+                counterparty = to_addr
+            elif to_addr == wallet_lc:
+                direction = "IN"
+                counterparty = from_addr
+            else:
+                # Should not happen — Polygonscan only returns rows for this wallet.
+                continue
+            try:
+                amount_raw = int(tx.get("value", "0"))
+                decimals = int(tx.get("tokenDecimal", "6"))
+            except ValueError:
+                continue
+            transfers.append(
+                Transfer(
+                    block=int(tx.get("blockNumber", "0")),
+                    ts=ts,
+                    tx=tx.get("hash", ""),
+                    direction=direction,
+                    counterparty=counterparty,
+                    amount_usdc=amount_raw / (10**decimals),
+                    token=token_label,
                 )
+            )
+
         log.info(
-            "  %s: scanned blocks %d-%d (%d transfers so far)",
+            "  %s: page %d returned %d rows (%d in window, %d total so far)",
             token_label,
-            cursor,
-            chunk_end,
+            page,
+            len(result),
+            n_window,
             len(transfers),
         )
-        cursor = chunk_end + 1
-        time.sleep(0.4)  # be polite to public RPCs
+
+        # Don't bother paginating beyond the cutoff window. If the last row
+        # on this page is past until_ts and we're sorting asc, there's
+        # nothing newer worth keeping.
+        if result and int(result[-1].get("timeStamp", 0)) >= until_ts:
+            log.info("  %s: passed until_ts — stopping pagination", token_label)
+            break
+
+        if len(result) < POLYGONSCAN_PAGE_SIZE:
+            break
+        page += 1
+        # Polite delay between pages (no-key tier is 1 req/5s)
+        time.sleep(5 if not api_key else 0.3)
+
+    # Verify we cover the requested window:
+    if transfers:
+        first_ts = min(t.ts for t in transfers)
+        last_ts = max(t.ts for t in transfers)
+        log.info(
+            "  %s: %d transfers in [%s → %s]",
+            token_label,
+            len(transfers),
+            datetime.fromtimestamp(first_ts, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            datetime.fromtimestamp(last_ts, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+        )
+    else:
+        log.warning("  %s: 0 transfers found in window", token_label)
 
     return transfers
 
@@ -414,7 +270,6 @@ def classify(trade: dict, transfers: list[Transfer]) -> tuple[str, Optional[Tran
     status = trade["status"]
 
     # Candidates: OUT transfers within ±MATCH_WINDOW_SEC of opened_at.
-    # pUSD is V2 collateral; USDC.e is legacy. Either could appear.
     candidates = [
         t
         for t in transfers
@@ -481,6 +336,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="CSV output path. Default: analysis/reconcile_<since>_to_<until>.csv",
     )
+    p.add_argument(
+        "--api-key",
+        default=os.getenv("POLYGONSCAN_API_KEY", ""),
+        help="Polygonscan API key (optional). Falls back to POLYGONSCAN_API_KEY env var.",
+    )
     return p.parse_args()
 
 
@@ -497,9 +357,9 @@ def main() -> int:
     until_ts = int(until_dt.timestamp())
 
     if args.wallet:
-        wallet = Web3.to_checksum_address(args.wallet)
+        wallet = args.wallet
     elif CFG.funder_address:
-        wallet = Web3.to_checksum_address(CFG.funder_address)
+        wallet = CFG.funder_address
     elif CFG.private_key:
         wallet = eoa_from_pk(CFG.private_key)
     else:
@@ -509,6 +369,12 @@ def main() -> int:
     log.info("Wallet:      %s", wallet)
     log.info("Period:      %s → %s (UTC)", args.since, args.until)
     log.info("DB:          %s", args.db)
+    log.info(
+        "API key:     %s",
+        "set"
+        if args.api_key
+        else "not set (rate-limited 1 req/5s — set POLYGONSCAN_API_KEY for faster runs)",
+    )
 
     trades = load_trades(args.db, since_ts, until_ts)
     log.info("DB trades:   %d in range", len(trades))
@@ -516,34 +382,12 @@ def main() -> int:
         log.warning("Nothing to reconcile. Done.")
         return 0
 
-    # Pick an RPC that can actually serve a head block (some free RPCs
-    # return eth_blockNumber for a block their getBlockByNumber can't yet
-    # answer — rotate past those).
-    dead: set[str] = set()
-    while True:
-        w3, rpc_url = connect(skip=dead)
-        try:
-            start_block = block_for_ts(w3, since_ts - 60)
-            end_block = block_for_ts(w3, until_ts + 60)
-            break
-        except Exception as e:
-            log.warning("RPC %s cannot serve head block (%s) — rotating", rpc_url, e)
-            dead.add(rpc_url)
-            if len(dead) >= len(POLYGON_RPCS):
-                log.error("All RPCs failed to serve a head block. Aborting.")
-                return 3
-    log.info(
-        "Block range: %d → %d (~%d blocks)",
-        start_block,
-        end_block,
-        end_block - start_block,
+    log.info("Fetching pUSD transfers from Polygonscan...")
+    pusd_x = fetch_transfers(wallet, PUSD, "pUSD", since_ts, until_ts, args.api_key)
+    log.info("Fetching USDC.e transfers from Polygonscan...")
+    usdce_x = fetch_transfers(
+        wallet, USDC_E, "USDC.e", since_ts, until_ts, args.api_key
     )
-
-    rpc = RpcRotator(w3, rpc_url)
-    log.info("Fetching pUSD transfers...")
-    pusd_x = fetch_transfers(rpc, wallet, PUSD, "pUSD", start_block, end_block)
-    log.info("Fetching USDC.e transfers...")
-    usdce_x = fetch_transfers(rpc, wallet, USDC_E, "USDC.e", start_block, end_block)
     transfers = pusd_x + usdce_x
     log.info(
         "On-chain:    %d pUSD + %d USDC.e = %d transfers",
@@ -552,7 +396,7 @@ def main() -> int:
         len(transfers),
     )
 
-    # Classify
+    # ── Classify ─────────────────────────────────────────────────────
     out_path = (
         Path(args.out)
         if args.out
@@ -570,7 +414,7 @@ def main() -> int:
     }
     real_pnl = 0.0
     db_pnl = 0.0
-    phantom_pnl = 0.0  # PnL booked on phantom trades — pure fiction
+    phantom_pnl = 0.0
 
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
@@ -635,7 +479,6 @@ def main() -> int:
     print(f" Phantom PnL:       ${phantom_pnl:+10.2f}   ← fictional")
     print(f" Diff (db - real):  ${db_pnl - real_pnl:+10.2f}")
     print()
-    # Unmatched on-chain OUTs — could be redemptions, wraps, or manual txs
     unmatched_out = [
         t for t in transfers if t.direction == "OUT" and t.tx not in matched_txs
     ]
