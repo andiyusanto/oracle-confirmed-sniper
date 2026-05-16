@@ -85,8 +85,12 @@ class Config:
     require_binance_agrees: bool = True
 
     # ── Confidence scoring ──────────────────────────────────────────
-    min_confidence: float = 20.0  # floor only — real trades score 55+; was 35.0
-    min_confidence_strong: float = 15.0  # lower bar for strong deltas; was 30.0
+    # Empirically validated on n=29 REAL_FILL trades (Apr 28 – May 17 2026
+    # via analysis/reconcile.py): conf>=75 → WR 69%, EV +$0.40/trade;
+    # conf<75 → WR 57%, EV -$0.34/trade. Both tiers raised to 75 because
+    # the strong-delta tier showed the same break-point.
+    min_confidence: float = 70.0
+    min_confidence_strong: float = 70.0
     # Score components:
     #   delta_score:    0-40 (how far oracle moved from open)
     #   time_score:     0-30 (less time = more certain)
@@ -146,7 +150,10 @@ class Config:
     min_edge_pct: float = 6.0
 
     # ── Market selection ────────────────────────────────────────────
-    assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL", "HYPE"])
+    # HYPE dropped May 17 2026: at conf>=75 on real fills (n=3) EV=-$1.54;
+    # global EV ~$0 over n=8. Smallest market, widest spread, least mature
+    # oracle. Re-add only if a clear edge appears in future regimes.
+    assets: list = field(default_factory=lambda: ["BTC", "ETH", "SOL"])
     durations: list = field(default_factory=lambda: [("5m", 300), ("15m", 900)])
 
     # ── Signal quality gates (ghost-redemption prevention) ──────────────
