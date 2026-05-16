@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from rich.live import Live
 
@@ -41,7 +42,6 @@ from execution.executor import Executor
 from ui.dashboard import Dashboard
 
 # ── Logging ─────────────────────────────────────────────────────────
-
 
 
 def _setup_logging():
@@ -245,6 +245,7 @@ async def run(is_live: bool, portfolio: float):
     # (entry tier is T-40s; ttl < 16s is the ghost zone).
     _ITER_WARN_SEC = 1.5
     _loop_iter_start: float = time.time()
+    _discover_task: Optional[asyncio.Task] = None
 
     try:
         with Live(dash.render(), refresh_per_second=2, console=dash.console) as live:
@@ -286,9 +287,14 @@ async def run(is_live: bool, portfolio: float):
                             dash.signals_seen,
                         )
 
-                # Rediscover markets periodically
-                if markets.needs_refresh():
-                    await markets.discover()
+                # Rediscover markets periodically — fire-and-forget so a
+                # slow Gamma fetch or fresh batch of on-chain cid validations
+                # cannot block the main iteration. A single-in-flight guard
+                # prevents stacking concurrent discoveries.
+                if markets.needs_refresh() and (
+                    _discover_task is None or _discover_task.done()
+                ):
+                    _discover_task = asyncio.create_task(markets.discover())
 
                 # Close expired positions + auto-redeem wins
                 closed = executor.close_expired()

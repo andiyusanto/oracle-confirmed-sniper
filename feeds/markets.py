@@ -45,6 +45,7 @@ log = logging.getLogger("hybrid.markets")
 
 try:
     from py_clob_client_v2.client import ClobClient
+
     HAS_CLOB = True
 except ImportError:
     HAS_CLOB = False
@@ -59,8 +60,13 @@ class MarketDiscovery:
     def __init__(self, price_feeds=None):
         self.tokens: dict[str, Token] = {}
         self._last_discovery = 0.0
-        self._book_cache: dict[str, tuple[float, float, float]] = {}  # tid: (price, spread, ts)
-        self._executor = ThreadPoolExecutor(max_workers=6)
+        self._book_cache: dict[
+            str, tuple[float, float, float]
+        ] = {}  # tid: (price, spread, ts)
+        # Sized for cold-start: ~48 fresh cid validations done in parallel
+        # via asyncio.gather. Smaller pools (6) serialized into ~16s per
+        # discovery and starved book refreshes that share this executor.
+        self._executor = ThreadPoolExecutor(max_workers=16)
         self._price_feeds = price_feeds
 
         # Reuse a single ClobClient for order book queries
@@ -87,6 +93,7 @@ class MarketDiscovery:
             return self._w3
         try:
             from web3 import Web3
+
             for rpc in _POLYGON_RPCS:
                 try:
                     w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 8}))
@@ -121,6 +128,7 @@ class MarketDiscovery:
 
         try:
             from web3 import Web3 as _W3
+
             ctf = w3.eth.contract(
                 address=_W3.to_checksum_address(_CTF_ADDRESS),
                 abi=_CTF_SLOT_ABI,
@@ -137,7 +145,9 @@ class MarketDiscovery:
             log.debug("conditionId %s validated (slots=%d)", cid_hex[:18], slots)
             return True
         except Exception as e:
-            log.debug("conditionId %s validation error: %s — fail-open", cid_hex[:18], e)
+            log.debug(
+                "conditionId %s validation error: %s — fail-open", cid_hex[:18], e
+            )
             return True  # fail-open: RPC errors must not silently kill trading
 
     async def discover(self):
@@ -159,8 +169,8 @@ class MarketDiscovery:
                                 continue
                             slug = f"{asset_l}-updown-{dur_label}-{wts}"
                             tokens = await self._fetch_slug_with_retry(
-                                session, slug, asset_u, end_ts,
-                                wts, dur_label)
+                                session, slug, asset_u, end_ts, wts, dur_label
+                            )
                             found.update(tokens)
         except Exception as e:
             log.error("Discovery failed: %s", e)
@@ -168,73 +178,90 @@ class MarketDiscovery:
         # ── On-chain conditionId validation ──────────────────────────────
         # For each conditionId we haven't seen before, check that it is
         # registered on the CTF contract (getOutcomeSlotCount > 0).
-        # This runs in the thread executor so it doesn't block the event loop.
+        # Runs in parallel via the thread executor — a 48-cid first sweep
+        # would take ~96s if awaited sequentially and would block the main
+        # loop iteration for that long; gather() collapses it to ~one RPC
+        # round-trip (bounded by the thread pool size).
         # Fail-open: if the RPC call fails, the token is kept.
         loop2 = asyncio.get_running_loop()
-        new_cids = {
-            tok.conditionId
-            for tok in found.values()
-            if tok.conditionId and tok.conditionId not in self._cid_valid
-        }
-        for cid in new_cids:
-            valid = await loop2.run_in_executor(
-                self._executor, self._validate_condition_sync, cid
+        new_cids = [
+            cid
+            for cid in {
+                tok.conditionId
+                for tok in found.values()
+                if tok.conditionId and tok.conditionId not in self._cid_valid
+            }
+        ]
+        if new_cids:
+            results = await asyncio.gather(
+                *(
+                    loop2.run_in_executor(
+                        self._executor, self._validate_condition_sync, cid
+                    )
+                    for cid in new_cids
+                ),
+                return_exceptions=True,
             )
-            self._cid_valid[cid] = valid
+            for cid, res in zip(new_cids, results):
+                # Treat exceptions as fail-open (don't block trading on RPC error).
+                self._cid_valid[cid] = (
+                    True if isinstance(res, BaseException) else bool(res)
+                )
 
         # Remove tokens for zombie conditionIds (registered=False)
         zombie_cids = {cid for cid, ok in self._cid_valid.items() if not ok}
         if zombie_cids:
             before = len(found)
             found = {
-                tid: tok for tid, tok in found.items()
+                tid: tok
+                for tid, tok in found.items()
                 if not tok.conditionId or tok.conditionId not in zombie_cids
             }
             removed = before - len(found)
             if removed:
                 log.warning(
                     "[PRE-ENTRY] Excluded %d token(s) for unregistered conditionId(s): %s",
-                    removed, [c[:18] for c in zombie_cids],
+                    removed,
+                    [c[:18] for c in zombie_cids],
                 )
 
         # Merge and prune expired
         now2 = time.time()
         for tid, tok in found.items():
             self.tokens[tid] = tok
-        self.tokens = {k: v for k, v in self.tokens.items()
-                       if v.end_ts > now2}
+        self.tokens = {k: v for k, v in self.tokens.items() if v.end_ts > now2}
         self._last_discovery = now2
 
         if found:
-            log.info("Markets: %d active (%d new)",
-                     len(self.tokens), len(found))
+            log.info("Markets: %d active (%d new)", len(self.tokens), len(found))
 
-    async def _fetch_slug_with_retry(self, session, slug, asset,
-                                      end_ts, wts, dur_label,
-                                      max_retries: int = 3
-                                      ) -> dict[str, Token]:
+    async def _fetch_slug_with_retry(
+        self, session, slug, asset, end_ts, wts, dur_label, max_retries: int = 3
+    ) -> dict[str, Token]:
         """Fetch slug with exponential backoff retry."""
         for attempt in range(max_retries):
             result = await self._fetch_slug(
-                session, slug, asset, end_ts, wts, dur_label)
+                session, slug, asset, end_ts, wts, dur_label
+            )
             if result is not None:
                 return result
             if attempt < max_retries - 1:
-                wait = 1.0 * (2 ** attempt)
-                log.debug("Retry %d/%d for %s in %.1fs",
-                          attempt + 1, max_retries, slug, wait)
+                wait = 1.0 * (2**attempt)
+                log.debug(
+                    "Retry %d/%d for %s in %.1fs", attempt + 1, max_retries, slug, wait
+                )
                 await asyncio.sleep(wait)
         return {}
 
-    async def _fetch_slug(self, session, slug, asset, end_ts,
-                           wts, dur_label) -> Optional[dict[str, Token]]:
+    async def _fetch_slug(
+        self, session, slug, asset, end_ts, wts, dur_label
+    ) -> Optional[dict[str, Token]]:
         """Fetch a single slug. Returns None on retryable failure,
         empty dict on 404/no-data, populated dict on success."""
         found = {}
         try:
             async with session.get(
-                f"{CFG.gamma_url}?slug={slug}",
-                timeout=aiohttp.ClientTimeout(total=8)
+                f"{CFG.gamma_url}?slug={slug}", timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
                 if resp.status == 429:
                     log.warning("Rate limited on slug %s", slug)
@@ -247,7 +274,7 @@ class MarketDiscovery:
                 return found
 
             event = events[0] if isinstance(events, list) else events
-            for m in (event.get("markets") or []):
+            for m in event.get("markets") or []:
                 if m.get("closed") or m.get("resolved"):
                     continue
                 tids = m.get("clobTokenIds") or []
@@ -278,15 +305,19 @@ class MarketDiscovery:
                 for i, tid in enumerate(tids):
                     tid = str(tid)
                     oc = str(outcomes[i]).lower() if i < len(outcomes) else ""
-                    direction = "UP" if any(k in oc for k in ["up", "yes"]) \
-                                else "DOWN"
+                    direction = "UP" if any(k in oc for k in ["up", "yes"]) else "DOWN"
                     price = float(prices[i]) if i < len(prices) else 0.5
                     dur_str = dur_label.replace("m", "min")
 
                     found[tid] = Token(
-                        token_id=tid, asset=asset, direction=direction,
-                        duration=dur_str, end_ts=end_ts, window_ts=wts,
-                        book_price=price, book_updated=0,
+                        token_id=tid,
+                        asset=asset,
+                        direction=direction,
+                        duration=dur_str,
+                        end_ts=end_ts,
+                        window_ts=wts,
+                        book_price=price,
+                        book_updated=0,
                         conditionId=cid,
                         neg_risk=neg_risk,
                     )
@@ -326,14 +357,22 @@ class MarketDiscovery:
 
             def _fetch():
                 book = self._clob.get_order_book(token.token_id)
-                _raw_asks = book.get("asks") if isinstance(book, dict) else (book.asks or [])
-                _raw_bids = book.get("bids") if isinstance(book, dict) else (book.bids or [])
-                asks = [float(a["price"] if isinstance(a, dict) else a.price)
-                        for a in (_raw_asks or [])
-                        if float(a["price"] if isinstance(a, dict) else a.price) > 0]
-                bids = [float(b["price"] if isinstance(b, dict) else b.price)
-                        for b in (_raw_bids or [])
-                        if float(b["price"] if isinstance(b, dict) else b.price) > 0]
+                _raw_asks = (
+                    book.get("asks") if isinstance(book, dict) else (book.asks or [])
+                )
+                _raw_bids = (
+                    book.get("bids") if isinstance(book, dict) else (book.bids or [])
+                )
+                asks = [
+                    float(a["price"] if isinstance(a, dict) else a.price)
+                    for a in (_raw_asks or [])
+                    if float(a["price"] if isinstance(a, dict) else a.price) > 0
+                ]
+                bids = [
+                    float(b["price"] if isinstance(b, dict) else b.price)
+                    for b in (_raw_bids or [])
+                    if float(b["price"] if isinstance(b, dict) else b.price) > 0
+                ]
                 # No asks = market fully priced in, nothing to buy.
                 # Return 0.99 so the signal engine's max_token_price
                 # check filters it out before execution.
