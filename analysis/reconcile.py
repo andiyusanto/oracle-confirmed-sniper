@@ -71,8 +71,10 @@ USDC_E = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 # keccak("Transfer(address,address,uint256)")
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
-# Polygon ~2s block time. Use 3-day chunks for getLogs (≈130k blocks).
-CHUNK_BLOCKS = 130_000
+# Polygon ~2s block time. 10k blocks ≈ 6 hours — small enough that free
+# RPCs accept it (drpc/llamarpc/1rpc free tiers reject ranges much larger).
+# Scanning ~3 weeks at this chunk size = ~80 chunks per token ≈ 2-3 minutes.
+CHUNK_BLOCKS = 10_000
 
 # Match tolerance: trade.size_usdc vs on-chain amount.
 # Bot rounds shares to 0.01 with ROUND_DOWN, then FOK can return slightly
@@ -219,6 +221,23 @@ def _is_range_error(e: Exception) -> bool:
         or "exceed" in msg
         or "too large" in msg
         or "too many" in msg
+        or "response size" in msg
+        or "query returned more" in msg
+    )
+
+
+def _is_bad_request(e: Exception) -> bool:
+    """400-class errors from free RPCs that don't say WHY they refused.
+    Treat as 'this RPC doesn't want to serve us' → rotate."""
+    msg = str(e).lower()
+    return (
+        "400 client error" in msg
+        or "bad request" in msg
+        or "403" in msg
+        or "forbidden" in msg
+        or "unauthorized" in msg
+        or "rate limit" in msg
+        or "429" in msg
     )
 
 
@@ -267,16 +286,40 @@ def fetch_transfers(
                     break
                 except Exception as e:
                     if _is_pruned_error(e):
-                        log.warning(
-                            "RPC %s prunes this range — rotating",
-                            rpc.rpc,
-                        )
+                        log.warning("RPC %s prunes this range — rotating", rpc.rpc)
                         if not rpc.rotate():
                             log.error(
                                 "All RPCs exhausted on pruning errors. "
                                 "Use a paid archive RPC (Alchemy/Infura)."
                             )
                             return transfers
+                        continue
+                    if _is_bad_request(e):
+                        # Free RPCs that refuse the request without a reason —
+                        # try a smaller chunk once, then rotate.
+                        if current_chunk > 2000:
+                            new_chunk = max(2000, current_chunk // 2)
+                            chunk_end = cursor + new_chunk - 1
+                            current_chunk = new_chunk
+                            log.warning(
+                                "RPC %s 400 Bad Request — shrinking to %d "
+                                "blocks before rotating",
+                                rpc.rpc,
+                                new_chunk,
+                            )
+                            continue
+                        log.warning(
+                            "RPC %s rejects 2k-block chunks — rotating", rpc.rpc
+                        )
+                        if not rpc.rotate():
+                            log.error(
+                                "All RPCs refused the request. "
+                                "Try a paid RPC (Alchemy/Infura free tier works)."
+                            )
+                            return transfers
+                        # After rotate, retry with original chunk size on new RPC.
+                        current_chunk = CHUNK_BLOCKS
+                        chunk_end = min(cursor + current_chunk - 1, end_block)
                         continue
                     if _is_range_error(e):
                         new_chunk = max(1000, (chunk_end - cursor + 1) // 2)
