@@ -728,17 +728,46 @@ class Executor:
                 neg_risk=neg_risk,
             )
 
-            resp = self._clob.create_and_post_order(order_args, options)
+            # FOK on sells too: a resting GTC sell that doesn't match would
+            # silently leave the position open in the wallet while the bot
+            # already booked CLOSED — same class of bug as the buy-side
+            # phantom-OPEN. Force all-or-nothing here.
+            resp = self._clob.create_and_post_order(
+                order_args, options, order_type=OrderType.FOK
+            )
 
-            order_id = None
-            if resp and isinstance(resp, dict):
-                order_id = resp.get("orderID") or resp.get("id")
-            elif resp and hasattr(resp, "orderID"):
-                order_id = resp.orderID
+            def _g(key):
+                if not resp:
+                    return None
+                if isinstance(resp, dict):
+                    return resp.get(key)
+                return getattr(resp, key, None)
 
-            if order_id:
-                # Compute actual PnL: exit proceeds minus cost basis
-                exit_proceeds = shares * price_d * (1.0 - CFG.taker_fee_pct / 100)
+            order_id = _g("orderID") or _g("id")
+            status = (str(_g("status") or "")).lower()
+
+            def _f(v):
+                try:
+                    return float(v) if v not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    return 0.0
+
+            matched_taking = _f(_g("takingAmount")) or _f(_g("matchedAmount"))
+            matched_making = _f(_g("makingAmount"))
+            matched = (
+                status in ("matched", "filled")
+                or matched_taking > 0
+                or matched_making > 0
+            )
+
+            if order_id and matched:
+                # Compute actual PnL: exit proceeds minus cost basis.
+                # Use actual filled shares when reported, else fall back to
+                # the requested share count.
+                filled_shares = matched_making if matched_making > 0 else shares
+                exit_proceeds = (
+                    filled_shares * price_d * (1.0 - CFG.taker_fee_pct / 100)
+                )
                 pnl = round(exit_proceeds - trade.size_usdc, 6)
                 trade.pnl = pnl
                 trade.status = "CLOSED"
@@ -750,20 +779,30 @@ class Executor:
                 self.verifier.verify_trade_close(trade)
                 log.warning(
                     "REVERSAL EXIT: %s sold %.2f shares @ $%.4f "
-                    "(entry $%.4f) pnl=$%+.4f order=%s",
+                    "(entry $%.4f) pnl=$%+.4f order=%s status=%s",
                     wkey,
-                    shares,
+                    filled_shares,
                     price_d,
                     trade.entry_price,
                     pnl,
                     order_id,
+                    status or "ok",
                 )
                 return True
-            else:
+
+            if order_id and not matched:
+                # FOK killed — bids moved away. Leave the position in
+                # open_positions so close_expired handles it normally.
                 log.warning(
-                    "REVERSAL EXIT: sell order rejected for %s — %s", wkey, resp
+                    "REVERSAL EXIT KILLED (FOK no match) for %s — bids "
+                    "moved off our ask. Position left open; close_expired "
+                    "will redeem normally.",
+                    wkey,
                 )
                 return False
+
+            log.warning("REVERSAL EXIT: sell order rejected for %s — %s", wkey, resp)
+            return False
 
         except Exception as e:
             log.error("REVERSAL EXIT error for %s: %s", wkey, e)

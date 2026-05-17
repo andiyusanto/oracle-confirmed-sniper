@@ -41,6 +41,8 @@ POLYGON_RPCS = [
 
 # ── Contract addresses (Polygon) ──────────────────────────────────────
 USDC_ADDRESS = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+# V2 collateral (Polymarket migrated Apr 28 2026 — redemptions now pay pUSD).
+PUSD_ADDRESS = Web3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
 CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
 NEG_RISK_ADAPTER = Web3.to_checksum_address(
     "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
@@ -309,18 +311,29 @@ def _fetch_redeemable_positions() -> list:
 
 
 def _parse_usdc_received(w3: Web3, receipt, wallet: str) -> float:
-    """Extract actual USDC.e received by wallet from a redemption receipt."""
-    try:
-        usdc_contract = w3.eth.contract(address=USDC_ADDRESS, abi=USDC_TRANSFER_ABI)
-        events = usdc_contract.events.Transfer().process_receipt(receipt)
-        total = 0.0
-        for evt in events:
-            if evt["args"]["to"].lower() == wallet.lower():
-                total += evt["args"]["value"] / 1e6
-        return total
-    except Exception as e:
-        log.debug("Could not parse Transfer events: %s", e)
-        return 0.0
+    """Extract actual collateral received by wallet from a redemption receipt.
+
+    Sums Transfer events on BOTH USDC.e (legacy, pre-V2 positions) and pUSD
+    (V2 collateral, post-Apr 28 2026). Returns the combined dollar amount.
+    The previous implementation scanned only USDC.e, so V2 redemptions
+    (which pay out in pUSD) under-reported as $0 or whatever stray USDC.e
+    leg the tx happened to emit. That caused the misleading
+    `Returned: $5.00 USDC.e` notification on $8.20 wins.
+
+    Both tokens are 6-decimals so the raw → dollar conversion is uniform.
+    """
+    total = 0.0
+    wallet_lc = wallet.lower()
+    for token_addr, label in ((USDC_ADDRESS, "USDC.e"), (PUSD_ADDRESS, "pUSD")):
+        try:
+            tok = w3.eth.contract(address=token_addr, abi=USDC_TRANSFER_ABI)
+            events = tok.events.Transfer().process_receipt(receipt)
+            for evt in events:
+                if evt["args"]["to"].lower() == wallet_lc:
+                    total += evt["args"]["value"] / 1e6
+        except Exception as e:
+            log.debug("Could not parse %s Transfer events: %s", label, e)
+    return total
 
 
 # ── Priority 1: Gas escalator ─────────────────────────────────────────
@@ -585,7 +598,7 @@ def _redeem_one(
         actual_usdc = _parse_usdc_received(w3, receipt, wallet)
         if actual_usdc > 0:
             log.info(
-                "REDEEMED%s: %s | $%.4f USDC.e | tx: 0x%s (block %d)",
+                "REDEEMED%s: %s | $%.4f collateral | tx: 0x%s (block %d)",
                 " [CANCELLED-MARKET]" if _is_cancelled else "",
                 market,
                 actual_usdc,
@@ -595,7 +608,7 @@ def _redeem_one(
         else:
             log.info(
                 "REDEEMED (no tokens): %s | tx: 0x%s (block %d) "
-                "— no USDC.e Transfer to wallet (database-only?)",
+                "— no USDC.e/pUSD Transfer to wallet (database-only?)",
                 market,
                 tx_hash.hex(),
                 receipt.blockNumber,

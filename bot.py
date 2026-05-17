@@ -296,10 +296,35 @@ async def run(is_live: bool, portfolio: float):
                 ):
                     _discover_task = asyncio.create_task(markets.discover())
 
+                    def _log_discover_error(t: asyncio.Task) -> None:
+                        if t.cancelled():
+                            return
+                        exc = t.exception()
+                        if exc is not None:
+                            log.error("markets.discover() failed: %s", exc)
+
+                    _discover_task.add_done_callback(_log_discover_error)
+
                 # Close expired positions + auto-redeem wins
                 closed = executor.close_expired()
                 for _, trade in closed:
                     risk.on_trade_closed(trade.pnl)
+                    # Resync risk.portfolio to actual wallet balance after every
+                    # close. Booked PnL drifts from reality whenever a trade
+                    # was a phantom (no on-chain spend) or a snap-WIN that
+                    # later corrected to LOSS. Without this resync the sizer
+                    # inflates over time — e.g. a $53 wallet sized $5 trades
+                    # because risk.portfolio had drifted to ~$139.
+                    if is_live:
+                        real_bal = await executor.get_wallet_balance_async()
+                        if real_bal > 0 and abs(real_bal - risk.portfolio) > 0.50:
+                            log.warning(
+                                "PORTFOLIO RESYNC: booked=$%.2f → wallet=$%.2f (drift=$%+.2f)",
+                                risk.portfolio,
+                                real_bal,
+                                real_bal - risk.portfolio,
+                            )
+                            risk.portfolio = real_bal
                     await telegram.notify_trade_closed(trade)
                     if trade.pnl > 0 and is_live:
                         # Queue redemption — positions may not be redeemable

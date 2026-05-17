@@ -211,7 +211,7 @@ async def notify_redeemed(count: int, total_usdc: float) -> bool:
         f"💰 <b>REDEEMED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Positions: <b>{count}</b>\n"
-        f"Returned: <b>${total_usdc:.2f} USDC.e</b>\n"
+        f"Returned: <b>${total_usdc:.2f}</b> collateral\n"
         f"✅ Back in wallet"
     )
     return await send(msg)
@@ -224,7 +224,7 @@ async def notify_manual_redeem_start(n_positions: int,
         f"🔄 <b>MANUAL REDEMPTION STARTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Positions: <b>{n_positions}</b>\n"
-        f"Estimated: <b>~${estimated_usdc:.2f} USDC.e</b>\n"
+        f"Estimated: <b>~${estimated_usdc:.2f}</b> collateral\n"
         f"⏳ Submitting on-chain transactions..."
     )
     return await send(msg)
@@ -247,7 +247,7 @@ async def notify_redeem_result(attempted: int, redeemed: int,
             f"⚠️ <b>PARTIAL REDEMPTION</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"Redeemed: <b>{redeemed}/{attempted}</b>\n"
-            f"Returned: <b>${total_usdc:.2f} USDC.e</b>\n"
+            f"Returned: <b>${total_usdc:.2f}</b> collateral\n"
             f"Some positions blocked — oracle may not have settled yet.\n"
             f"Run <code>python3 redeem_now.py</code> again in a few minutes."
         )
