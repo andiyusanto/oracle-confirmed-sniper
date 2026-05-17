@@ -526,6 +526,13 @@ class Executor:
                 except (TypeError, ValueError):
                     return 0.0
 
+            # NOTE on amount fields: for BUY orders Polymarket V2 returns
+            # takingAmount as the SHARE COUNT received (taker side = outcome
+            # tokens), NOT the USDC paid. makingAmount is the USDC paid.
+            # We previously trusted takingAmount as USDC, which stored a
+            # $2.90 buy as size=$5.00 (5 shares treated as $5). The fix:
+            # ignore amount fields entirely. FOK guarantees all-or-nothing,
+            # so actual spend is exactly shares * price_d.
             matched_taking = _f(_g("takingAmount")) or _f(_g("matchedAmount"))
             matched_making = _f(_g("makingAmount"))
             matched = (
@@ -536,12 +543,9 @@ class Executor:
 
             if order_id and matched:
                 trade.entry_price = price_d
-                # Prefer actual matched amount when reported, else fall back
-                # to the requested notional. (FOK should match all-or-nothing,
-                # but defend against schema drift.)
-                actual_usdc = matched_taking if matched_taking > 0 else shares * price_d
+                # FOK = all-or-nothing → actual notional is exactly shares × price.
                 trade.size_usdc = float(
-                    Decimal(str(actual_usdc)).quantize(
+                    Decimal(str(shares * price_d)).quantize(
                         Decimal("0.01"), rounding=ROUND_DOWN
                     )
                 )
@@ -761,10 +765,12 @@ class Executor:
             )
 
             if order_id and matched:
-                # Compute actual PnL: exit proceeds minus cost basis.
-                # Use actual filled shares when reported, else fall back to
-                # the requested share count.
-                filled_shares = matched_making if matched_making > 0 else shares
+                # FOK = all-or-nothing → filled shares is exactly `shares`.
+                # Don't trust response amount fields: their units differ by
+                # side (BUY: takingAmount=shares; SELL: takingAmount=USDC;
+                # makingAmount inverts). The bug "size $2.90 stored as $5.00"
+                # came from using takingAmount as USDC on a BUY.
+                filled_shares = shares
                 exit_proceeds = (
                     filled_shares * price_d * (1.0 - CFG.taker_fee_pct / 100)
                 )

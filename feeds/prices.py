@@ -387,6 +387,13 @@ class PriceFeeds:
         asset = self._symbol_to_asset(symbol)
         if not asset:
             return
+        # Ignore prices for assets we don't trade. RTDS subscribes with
+        # empty filters and pushes every supported coin (HYPE, etc), but
+        # internal dicts (chainlink, _price_history) are only seeded for
+        # CFG.assets. Dropping HYPE from CFG.assets without this guard
+        # crashed _record_price with KeyError, taking down the WS reader.
+        if asset not in self.chainlink:
+            return
         fval = float(value)
         if topic == "crypto_prices_chainlink":
             log.debug("CL feed: %s=$%.2f", asset, fval)
@@ -407,6 +414,8 @@ class PriceFeeds:
         stream = msg.get("stream", "")
         asset = self._symbol_to_asset(stream.split("@")[0] if "@" in stream else "")
         if not asset:
+            return
+        if asset not in self.binance:
             return
         bb = float(data.get("b", 0))
         ba = float(data.get("a", 0))
